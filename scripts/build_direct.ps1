@@ -33,7 +33,8 @@ $targets = @(
                "src\matmul\matmul.cu", "src\common\reference.cu")
        Inc = @("src\common", "src\matmul"); Libs = @() },
     @{ Name = "render_art"
-       Src = @("src\art\render_art.cu")
+       Src = @("src\art\render_art.cu", "src\art\art_render.cu", "src\art\art_ref.cu",
+               "src\common\reference.cu")
        Inc = @("src\common", "src\art"); Libs = @() }
 )
 

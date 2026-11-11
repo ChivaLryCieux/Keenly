@@ -3,10 +3,13 @@
 //
 // ASCII-ONLY FILE ON PURPOSE (see src/common/cuda_utils.h for the reason).
 //
-// Stage 1 (toolchain): CLI parsing, GPU buffer, PNG writer. The image is a
-// test pattern - a fine ramp checks 16-bit gradient banding, the color chips
-// check channel order, the frame checks bounds. The real art lands in the
-// next commits.
+// Every render runs the verify gate first (unless --no-check): the same
+// pixel shader executes on CPU and GPU and the two buffers must agree to
+// relL2 < 1e-4, the same "prove it on the CPU" philosophy as bench_matmul.
+// The budget is not zero: nvcc --use_fast_math plus FMA contraction leave a
+// measured rounding floor of ~1.4e-5 over this pipeline (6e-6 without
+// fast-math). Real plumbing bugs land at 1e-2 and above, so 1e-4 still has
+// ~100x of detection headroom.
 
 #include <cstdio>
 #include <cstdlib>
@@ -17,16 +20,19 @@
 
 #include <cuda_runtime.h>
 
+#include "art_render.h"
 #include "cuda_utils.h"
 #include "png_writer.h"
+#include "reference.h"
 
 struct Args
 {
     int width = 2560;
-    int height = 1088;
-    int depth = 16;  // PNG bits per channel: 8 or 16
-    unsigned seed = 7u;
-    std::string out = "out/test_pattern.png";
+    int height = 1072;  // 2.39:1 cinema frame
+    int depth = 16;     // PNG bits per channel: 8 or 16
+    bool check = true;
+    art::FieldParams field;
+    std::string out = "out/field.png";
 };
 
 static void printUsage()
@@ -34,11 +40,16 @@ static void printUsage()
     std::printf(
         "render_art - GPU generative art stills -> PNG\n"
         "usage: render_art [options]\n"
-        "  --width  N   image width in pixels   (default 2560)\n"
-        "  --height N   image height in pixels  (default 1088)\n"
-        "  --depth  D   PNG bits per channel: 8 or 16 (default 16)\n"
-        "  --seed   S   deterministic seed      (default 7)\n"
-        "  --out    P   output PNG path         (default out/test_pattern.png)\n");
+        "  --width  N     image width in pixels   (default 2560)\n"
+        "  --height N     image height in pixels  (default 1072)\n"
+        "  --depth  D     PNG bits per channel: 8 or 16 (default 16)\n"
+        "  --out    P     output PNG path         (default out/field.png)\n"
+        "  --seed   S     deterministic seed      (default 7)\n"
+        "  --view   F     noise extent across height (default 3.2)\n"
+        "  --octaves N    fBm octaves             (default 5)\n"
+        "  --warp   F     domain warp strength    (default 1.2)\n"
+        "  --contrast F   field shaping           (default 1.4)\n"
+        "  --no-check     skip the CPU reference gate\n");
 }
 
 static bool parseArgs(int argc, char** argv, Args& a)
@@ -67,14 +78,32 @@ static bool parseArgs(int argc, char** argv, Args& a)
             const char* v = next("--depth");
             if (!v) return false;
             a.depth = std::atoi(v);
-        } else if (key == "--seed") {
-            const char* v = next("--seed");
-            if (!v) return false;
-            a.seed = unsigned(std::strtoul(v, nullptr, 10));
         } else if (key == "--out") {
             const char* v = next("--out");
             if (!v) return false;
             a.out = v;
+        } else if (key == "--seed") {
+            const char* v = next("--seed");
+            if (!v) return false;
+            a.field.seed = unsigned(std::strtoul(v, nullptr, 10));
+        } else if (key == "--view") {
+            const char* v = next("--view");
+            if (!v) return false;
+            a.field.view = float(std::atof(v));
+        } else if (key == "--octaves") {
+            const char* v = next("--octaves");
+            if (!v) return false;
+            a.field.octaves = std::atoi(v);
+        } else if (key == "--warp") {
+            const char* v = next("--warp");
+            if (!v) return false;
+            a.field.warp = float(std::atof(v));
+        } else if (key == "--contrast") {
+            const char* v = next("--contrast");
+            if (!v) return false;
+            a.field.contrast = float(std::atof(v));
+        } else if (key == "--no-check") {
+            a.check = false;
         } else {
             std::fprintf(stderr, "unknown option: %s\n", key.c_str());
             return false;
@@ -87,32 +116,26 @@ static bool parseArgs(int argc, char** argv, Args& a)
     return true;
 }
 
-// Toolchain test pattern, linear RGB in [0, 1].
-//   top band    : horizontal ramp  (banding / bit-depth check)
-//   bottom band : 8 RGB chips      (channel order check)
-//   4 px frame  : white border     (bounds check)
-__global__ void testPatternKernel(float* rgb, int w, int h)
+// CPU reference gate: same pixel shader, serial vs parallel execution.
+// relL2 < 1e-4 is the pass budget (fast-math rounding floor, see file header).
+static bool runCheck(const art::FieldParams& p)
 {
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= w || y >= h) return;
+    const int w = 320, h = 180;
+    const size_t n = size_t(w) * size_t(h) * 3;
+    std::vector<float> ref(n), gpu(n);
 
-    float* p = rgb + (size_t(y) * w + x) * 3;
-    const float fx = float(x) / float(w - 1);
-    const float fy = float(y) / float(h - 1);
+    art::renderFieldCpu(ref.data(), w, h, p);
 
-    if (x < 4 || x >= w - 4 || y < 4 || y >= h - 4) {
-        p[0] = p[1] = p[2] = 0.95f;
-    } else if (y < h * 3 / 4) {
-        p[0] = fx;
-        p[1] = 0.25f + 0.5f * fy;
-        p[2] = 1.0f - fx;
-    } else {
-        const int chip = min(int(fx * 8.0f), 7);
-        p[0] = (chip & 1) ? 1.0f : 0.0f;
-        p[1] = (chip & 2) ? 1.0f : 0.0f;
-        p[2] = (chip & 4) ? 1.0f : 0.0f;
-    }
+    float* dBuf = nullptr;
+    CUDA_CHECK(cudaMalloc(&dBuf, n * sizeof(float)));
+    art::renderFieldGpu(dBuf, w, h, p);
+    CUDA_CHECK(cudaMemcpy(gpu.data(), dBuf, n * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaFree(dBuf));
+
+    const DiffStats d = compareArrays(gpu.data(), ref.data(), n);
+    std::printf("check  : relL2 %.3e  maxAbs %.3e  (GPU vs CPU, %dx%d)\n",
+                d.relL2, d.maxAbs, w, h);
+    return d.relL2 < 1e-4;
 }
 
 int main(int argc, char** argv)
@@ -126,26 +149,29 @@ int main(int argc, char** argv)
     cudaDeviceProp prop{};
     CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
     std::printf("device : %s\n", prop.name);
-    std::printf("render : %dx%d  seed %u\n", args.width, args.height, args.seed);
+    std::printf("render : %dx%d  seed %u  view %.2f  warp %.2f  octaves %d\n",
+                args.width, args.height, args.field.seed, args.field.view,
+                args.field.warp, args.field.octaves);
+
+    if (args.check && !runCheck(args.field)) {
+        std::fprintf(stderr, "CHECK FAILED: GPU disagrees with the CPU reference\n");
+        return 1;
+    }
 
     float* dRgb = nullptr;
     const size_t pixels = size_t(args.width) * size_t(args.height);
     CUDA_CHECK(cudaMalloc(&dRgb, pixels * 3 * sizeof(float)));
 
-    const dim3 block(16, 16);
-    const dim3 grid((args.width + block.x - 1) / block.x, (args.height + block.y - 1) / block.y);
-
     GpuTimer timer;
     timer.start();
-    testPatternKernel<<<grid, block>>>(dRgb, args.width, args.height);
-    CUDA_CHECK(cudaGetLastError());  // a failed launch must not look like a fast render
+    art::renderFieldGpu(dRgb, args.width, args.height, args.field);
     const float ms = timer.stop();
-    std::printf("kernel : %.3f ms  (%.1f Mpixel/s)\n", ms,
-                pixels / (double(ms) * 1e3));
+    std::printf("kernel : %.3f ms  (%.1f Mpixel/s)\n", ms, pixels / (double(ms) * 1e3));
 
     std::vector<float> hRgb(pixels * 3);
     CUDA_CHECK(cudaMemcpy(hRgb.data(), dRgb, pixels * 3 * sizeof(float),
                           cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaFree(dRgb));
 
     std::error_code ec;
     std::filesystem::path outPath(args.out);
@@ -176,7 +202,5 @@ int main(int argc, char** argv)
         return 1;
     }
     std::printf("wrote  : %s  (%d-bit)\n", args.out.c_str(), args.depth);
-
-    CUDA_CHECK(cudaFree(dRgb));
     return 0;
 }
