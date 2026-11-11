@@ -33,6 +33,7 @@ struct Args
     int depth = 16;     // PNG bits per channel: 8 or 16
     bool check = true;
     bool post = true;
+    unsigned postSet = 0;  // which params were explicitly set on the CLI
     std::string preset = "cinema";
     art::FieldParams field;
     art::PostParams postp;
@@ -41,14 +42,31 @@ struct Args
 
 // ---- presets ---------------------------------------------------------------
 // Palette stops are perceptual (sRGB-like); fieldPixel linearizes them.
+// Each preset also carries field + post defaults (grain character differs:
+// clumped 35mm grain for cinema, fine matte grain for the poster). Explicit
+// CLI flags always win over preset defaults.
 
-static void applyPreset(art::FieldParams& f, const std::string& name)
+enum SetBits
+{
+    kSetView = 1u << 0,      kSetOctaves = 1u << 1,   kSetWarp = 1u << 2,
+    kSetContrast = 1u << 3,  kSetRelief = 1u << 4,    kSetSeed = 1u << 5,
+    kSetExposure = 1u << 6,  kSetGrain = 1u << 7,     kSetGrainScale = 1u << 8,
+    kSetHalation = 1u << 9,  kSetBloom = 1u << 10,    kSetVignette = 1u << 11
+};
+
+static void applyPreset(art::FieldParams& f, art::PostParams& p, const std::string& name,
+                        unsigned set)
 {
     if (name == "mono") {
         f.pal.count = 2;
         f.pal.pos[0] = 0.0f;  f.pal.pos[1] = 1.0f;
         f.pal.rgb[0][0] = 0.03f; f.pal.rgb[0][1] = 0.03f; f.pal.rgb[0][2] = 0.04f;
         f.pal.rgb[1][0] = 0.96f; f.pal.rgb[1][1] = 0.96f; f.pal.rgb[1][2] = 0.97f;
+        if (!(set & kSetContrast)) f.contrast = 1.5f;
+        if (!(set & kSetGrain))      p.grain = 0.055f;
+        if (!(set & kSetGrainScale)) p.grainScale = 2.2f;
+        if (!(set & kSetHalation))   p.halation = 0.30f;
+        if (!(set & kSetVignette))   p.vignette = 0.35f;
     } else if (name == "cinema") {
         // teal shadows -> amber highlights (the classic teal-orange grade)
         f.pal.count = 5;
@@ -59,6 +77,10 @@ static void applyPreset(art::FieldParams& f, const std::string& name)
         f.pal.rgb[2][0] = 0.20f; f.pal.rgb[2][1] = 0.42f; f.pal.rgb[2][2] = 0.46f;
         f.pal.rgb[3][0] = 0.80f; f.pal.rgb[3][1] = 0.52f; f.pal.rgb[3][2] = 0.28f;
         f.pal.rgb[4][0] = 1.00f; f.pal.rgb[4][1] = 0.92f; f.pal.rgb[4][2] = 0.78f;
+        if (!(set & kSetGrain))      p.grain = 0.05f;
+        if (!(set & kSetGrainScale)) p.grainScale = 2.8f;
+        if (!(set & kSetHalation))   p.halation = 0.40f;
+        if (!(set & kSetVignette))   p.vignette = 0.38f;
     } else if (name == "dusk") {
         // indigo -> magenta -> coral (poster palette)
         f.pal.count = 5;
@@ -69,6 +91,16 @@ static void applyPreset(art::FieldParams& f, const std::string& name)
         f.pal.rgb[2][0] = 0.62f; f.pal.rgb[2][1] = 0.22f; f.pal.rgb[2][2] = 0.48f;
         f.pal.rgb[3][0] = 0.95f; f.pal.rgb[3][1] = 0.48f; f.pal.rgb[3][2] = 0.35f;
         f.pal.rgb[4][0] = 1.00f; f.pal.rgb[4][1] = 0.88f; f.pal.rgb[4][2] = 0.72f;
+        if (!(set & kSetView))       f.view = 2.8f;
+        if (!(set & kSetWarp))       f.warp = 1.35f;
+        if (!(set & kSetContrast))   f.contrast = 1.35f;
+        if (!(set & kSetRelief))     f.relief = 2.2f;
+        if (!(set & kSetExposure))   p.exposure = 1.05f;
+        if (!(set & kSetGrain))      p.grain = 0.035f;
+        if (!(set & kSetGrainScale)) p.grainScale = 1.3f;
+        if (!(set & kSetHalation))   p.halation = 0.22f;
+        if (!(set & kSetBloom))      p.bloom = 0.10f;
+        if (!(set & kSetVignette))   p.vignette = 0.28f;
     } else {
         std::fprintf(stderr, "unknown preset: %s (use mono|cinema|dusk)\n", name.c_str());
         std::exit(1);
@@ -157,50 +189,62 @@ static bool parseArgs(int argc, char** argv, Args& a)
             const char* v = next("--seed");
             if (!v) return false;
             a.field.seed = unsigned(std::strtoul(v, nullptr, 10));
+            a.postSet |= kSetSeed;
         } else if (key == "--view") {
             const char* v = next("--view");
             if (!v) return false;
             a.field.view = float(std::atof(v));
+            a.postSet |= kSetView;
         } else if (key == "--octaves") {
             const char* v = next("--octaves");
             if (!v) return false;
             a.field.octaves = std::atoi(v);
+            a.postSet |= kSetOctaves;
         } else if (key == "--warp") {
             const char* v = next("--warp");
             if (!v) return false;
             a.field.warp = float(std::atof(v));
+            a.postSet |= kSetWarp;
         } else if (key == "--contrast") {
             const char* v = next("--contrast");
             if (!v) return false;
             a.field.contrast = float(std::atof(v));
+            a.postSet |= kSetContrast;
         } else if (key == "--relief") {
             const char* v = next("--relief");
             if (!v) return false;
             a.field.relief = float(std::atof(v));
+            a.postSet |= kSetRelief;
         } else if (key == "--exposure") {
             const char* v = next("--exposure");
             if (!v) return false;
             a.postp.exposure = float(std::atof(v));
+            a.postSet |= kSetExposure;
         } else if (key == "--grain") {
             const char* v = next("--grain");
             if (!v) return false;
             a.postp.grain = float(std::atof(v));
+            a.postSet |= kSetGrain;
         } else if (key == "--grain-scale") {
             const char* v = next("--grain-scale");
             if (!v) return false;
             a.postp.grainScale = float(std::atof(v));
+            a.postSet |= kSetGrainScale;
         } else if (key == "--halation") {
             const char* v = next("--halation");
             if (!v) return false;
             a.postp.halation = float(std::atof(v));
+            a.postSet |= kSetHalation;
         } else if (key == "--bloom") {
             const char* v = next("--bloom");
             if (!v) return false;
             a.postp.bloom = float(std::atof(v));
+            a.postSet |= kSetBloom;
         } else if (key == "--vignette") {
             const char* v = next("--vignette");
             if (!v) return false;
             a.postp.vignette = float(std::atof(v));
+            a.postSet |= kSetVignette;
         } else if (key == "--no-post") {
             a.post = false;
         } else if (key == "--no-check") {
@@ -249,7 +293,7 @@ int main(int argc, char** argv)
 
     cudaDeviceProp prop{};
     CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
-    applyPreset(args.field, args.preset);
+    applyPreset(args.field, args.postp, args.preset, args.postSet);
     std::printf("device : %s\n", prop.name);
     std::printf("render : %dx%d  preset %s  seed %u  view %.2f  warp %.2f  octaves %d\n",
                 args.width, args.height, args.preset.c_str(), args.field.seed,
