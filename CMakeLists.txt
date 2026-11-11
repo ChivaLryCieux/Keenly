@@ -20,3 +20,4 @@ find_package(CUDAToolkit REQUIRED)
 
 add_subdirectory(src/matmul)
 add_subdirectory(src/conv2d)
+add_subdirectory(src/art)

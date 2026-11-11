@@ -13,7 +13,8 @@ New-Item -ItemType Directory -Path $bin -Force | Out-Null
 
 # -Xcompiler=/utf-8 uses the = form on purpose: embedding a quoted argument
 # inside a PowerShell string here just fights the quote parser.
-$flags = "-arch=sm_75 -O3 --use_fast_math -lineinfo --expt-relaxed-constexpr -Xcompiler=/utf-8"
+# -std=c++17 matches CMAKE_CXX_STANDARD / CMAKE_CUDA_STANDARD in CMakeLists.txt.
+$flags = "-arch=sm_75 -O3 --use_fast_math -lineinfo --expt-relaxed-constexpr -std=c++17 -Xcompiler=/utf-8"
 
 # Every Src / Inc entry is relative to $root, so no `cd` is needed.
 $targets = @(
@@ -30,7 +31,10 @@ $targets = @(
     @{ Name = "debug_conv"
        Src = @("src\conv2d\debug_conv.cu", "src\conv2d\conv.cu",
                "src\matmul\matmul.cu", "src\common\reference.cu")
-       Inc = @("src\common", "src\matmul"); Libs = @() }
+       Inc = @("src\common", "src\matmul"); Libs = @() },
+    @{ Name = "render_art"
+       Src = @("src\art\render_art.cu")
+       Inc = @("src\common", "src\art"); Libs = @() }
 )
 
 foreach ($t in $targets) {
