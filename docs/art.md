@@ -59,8 +59,23 @@ powershell -ExecutionPolicy Bypass -File scripts\build_direct.ps1   # 全量
 | `cinema` | 青黑阴影 → 琥珀高光（teal-orange） | 聚团 35mm 颗粒（scale 2.8） | 电影画幅背景 |
 | `dusk` | 靛蓝 → 品红 → 珊瑚 | 细磨砂颗粒（scale 1.3） | 海报 |
 | `mono` | 灰阶 | 中等 | 质感基底 / 印刷 |
+| `ember` | 黑红 → 橙 → 金 | 中粗颗粒 + 强 halation | 火 / 熔岩 |
+| `ice` | 深蓝黑 → 钢蓝 → 冰白 | 细颗粒 + 柔 bloom | 冰川 / 玻璃 |
+| `moss` | 暗绿棕 → 苔绿 → 暖沙 | 中颗粒 | 森林 / 有机 |
 
 CLI 显式参数优先于 preset 默认值（`render_art.cu` 用 set 位图跟踪）。
+
+## 四个场生成器（--mode）
+
+| mode | 数学 | 质感 |
+|---|---|---|
+| `warp` | 二级域扭曲 fBm | 流动的烟雾 / 有机流体（默认） |
+| `ridge` | 扭曲的 ridged fBm | 大理石纹 / 岩层 |
+| `bands` | warpField 的三角波等值线 | 流线条纹 / 木纹 / 等高线 |
+| `frost` | 高频 fBm + 逐像素斑点 | 磨砂 / 喷砂表面 |
+
+全部是 `(x, y, seed)` 纯函数、纯多项式运算（bands 的折叠也是 frac+折线，
+无三角函数）——CPU/GPU 逐位一致由此成立。
 
 ## 质感旋钮
 
@@ -75,7 +90,7 @@ CLI 显式参数优先于 preset 默认值（`render_art.cu` 用 set 位图跟�
 | `--warp` / `--view` | 域扭曲强度 / 图案尺度 | 更流体 / 更宏观的结构 |
 | `--relief` | 浮雕光照强度 | 更强的立体质感（磨砂蚀刻感） |
 
-## 系列出图
+## 系列出图与九宫格
 
 像素是 `(x, y, seed)` 纯函数，**换 seed 就是换构图，风格不变**——同一 preset
 可以出一整个系列：
@@ -83,17 +98,25 @@ CLI 显式参数优先于 preset 默认值（`render_art.cu` 用 set 位图跟�
 ```powershell
 .\bin\render_art.exe --preset cinema --seed 21 --width 2560 --height 1072 --out out\cinema_seed21.png
 .\bin\render_art.exe --preset cinema --seed 42 --width 2560 --height 1072 --out out\cinema_seed42.png
+
+# 九宫格：9 种风格组合一次出图（4 生成器 x 6 调色板的展示集）
+.\bin\render_art.exe --grid out\showcase_grid.png --tile 800 --depth 16
 ```
 
-## 验证门禁（和 bench_matmul 同一哲学）
+九宫格每格都是完整管线渲染（含各自的位级门禁），格子布局在
+`render_art.cu` 的 `runGrid()` 里，改 cells 表就能换展示组合。
+
+## 验证门禁（和 bench_matmul 同一哲学，但更严）
 
 每次渲染前自动跑 `check`：同一个 pixel shader 在 CPU（串行）和 GPU（并行）
-各跑一遍，relL2 必须 < **2e-4**，否则 exit 1。
+各跑一遍，要求 **位级全等（maxAbs == 0）**，否则 exit 1。
 
-- 实测舍入底噪：**6.5e-5**（fast-math + FMA 收缩，随浮点运算链长度增长：
-  5 次 field 求值 + 每 octave 旋转后从 1.4e-5 涨到这里）；真实 bug 量级在
-  1e-2 以上，2e-4 预算仍有 ~50x 检出余量。阈值由实测底噪和 bug 量级共同定，
-  不能拍脑袋。
+- art 目标编译**严格 IEEE 数学**（`--fmad=false`，不加 fast-math），所以
+  GPU 输出与 CPU 参考逐位一致（四个生成器实测 relL2 = 0.000e+00）。
+  matmul/conv 仍用 fast-math 追速度——各取所需，flags 是 per-target 的。
+- 历史教训（见 experiments.md E9/E10/E11）：fast-math 时代门禁只能给预算
+  （1e-4 → 2e-4），而 bands 的折叠结构把舍入差放大 126 倍直接击穿预算——
+  换 IEEE 之后预算模型整个不需要了，位级全等是最强的正确性声明。
 - post 链（颗粒/模糊/暗角/调色）不在数值门禁内——它们的效果用统计验证：
   高频残差（颗粒）、暗角 A/B（边角 ×0.85、中心 ×1.0）、行内唯一值数（色带）、
   饱和度变化（split-tone 生效验证）。

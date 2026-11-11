@@ -181,6 +181,27 @@ fBm 每 octave 加 4 次旋转乘加。
 
 ---
 
+## E11 — art 模块：换 IEEE 数学，门禁升级为位级全等（2026-11-11）
+
+**现象**：新增 bands 生成器（warpField 的三角波等值线）门禁直接失败：
+relL2 = 2.6e-3、maxAbs = 6.9e-2，远超 2e-4 预算。frost 模式同时只差 9e-7。
+
+**分析**：不是索引 bug。bands 的 fold 把上游浮点差逐级放大：×12 频率 →
+折叠分支切换 → sstep 斜率 1.875 → 调色板 smoothstep 斜率 ~7.5，总增益约
+126 倍。E10 的「预算随链长增长」模型挡不住这种**结构性增益**。
+
+**解法**：art 目标改用严格 IEEE 数学（`--fmad=false`、不加 fast-math，
+matmul/conv 保持 fast-math 不变，CMake flags 改为 per-target）。实测：
+**四个生成器 relL2 = 0.000e+00、maxAbs = 0.000e+00**。
+
+**决定**：门禁从「relL2 < 预算」收紧为「maxAbs == 0」。位级全等是最强的
+正确性声明，而且不再需要任何预算模型——预算那套复杂度是 fast-math 的税。
+
+**教训**：与其不断给误差预算打补丁，不如换一个让误差为零的编译约定。
+「艺术渲染不在乎 1% 速度，在乎可复现」——性能 flag 是 per-target 的事。
+
+---
+
 ## 待办实验
 
 - [ ] v3 用多个 accumulator fragment 打断 `mma_sync` 依赖链，看能否超过 v2
