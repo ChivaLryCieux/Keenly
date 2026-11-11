@@ -41,10 +41,13 @@ struct Palette
 // of them can render at any size, tiled or whole.
 enum FieldMode
 {
-    kFieldWarp = 0,  // two-level domain-warped fBm: flowing organic smoke
-    kFieldRidge = 1, // warped ridged fBm: marble veins / rock strata
-    kFieldBands = 2, // triangle-wave contours of the warped field: flow lines
-    kFieldFrost = 3  // high-frequency fBm + per-pixel speckle: frosted matte
+    kFieldWarp = 0,   // two-level domain-warped fBm: flowing organic smoke
+    kFieldRidge = 1,  // warped ridged fBm: marble veins / rock strata
+    kFieldBands = 2,  // triangle-wave contours of the warped field: flow lines
+    kFieldFrost = 3,  // fine Worley facets + sparkle: crystalline frosted glass
+    kFieldFacet = 4,  // hard-edged Worley crystal: flat facets, bright seams
+    kFieldPrism = 5,  // folded triangle lattice: austere chevron / diamond grid
+    kFieldLiquid = 6  // glossy metal: flowing warp field + specular shading
 };
 
 struct FieldParams
@@ -125,15 +128,45 @@ __host__ __device__ inline float fieldValue(const FieldParams& p, float u, float
             // grain / topographic bands. Polynomial only (frac + folds), so
             // CPU/GPU still agree bit-for-bit.
             const float f = warpField(px, py, p) * p.bands;
-            const float fr = f - floorf(f);            // frac, exact
-            const float tri = fr < 0.5f ? 2.0f * fr : 2.0f * (1.0f - fr);
+            const float tri = triFrac(f);
             return 2.0f * sstep(0.10f, 0.90f, tri) - 1.0f;
         }
         case kFieldFrost: {
-            // high-frequency fBm + per-pixel speckle: sandblasted matte
-            const float f = fbm2(px * 2.5f, py * 2.5f, s + 59u, oc, lac, gn);
+            // crystalline frosted glass: fine Worley facets with dark seams
+            // and a per-pixel speckle bed. The sparkle highlights live in the
+            // shading stage (powi 90 specular).
+            const WorleyResult w = worley2(px * 5.5f, py * 5.5f, s);
+            const float bevel = sstep(0.0f, 0.18f, w.f2 - w.f1);
             const float sp = hash01(x, y, s + 3433u) * 2.0f - 1.0f;
-            return f * 0.85f + sp * 0.30f;
+            return (w.val * 0.50f + bevel * 0.45f - 0.475f) * 1.6f + sp * 0.16f;
+        }
+        case kFieldFacet: {
+            // austere crystal: big flat facets (one tone + one light tilt per
+            // cell), bright seams where facets meet. Hard geometry, no smoke.
+            const WorleyResult w = worley2(px * 3.0f, py * 3.0f, s);
+            const float bevel = sstep(0.0f, 0.22f, w.f2 - w.f1);
+            const float tilt = hash01(w.cx, w.cy, s + 77u) * 2.0f - 1.0f;
+            const float lit = 0.5f + 0.5f * tilt;  // per-facet light angle
+            return w.val * 0.55f + bevel * 0.35f + lit * 0.45f - 0.675f;
+        }
+        case kFieldPrism: {
+            // austere chevron lattice: two triangle-wave fields folded into
+            // diamonds on a 30-degree rotated frame, plus a hard light ramp
+            // across the picture. Everything straight, everything sharp.
+            const float rx = px * 0.8660254f + py * 0.5f;
+            const float ry = -px * 0.5f + py * 0.8660254f;
+            const float fq = p.bands * 0.5f;
+            const float b1 = triFrac(rx * fq);
+            const float b2 = triFrac(ry * fq);
+            const float b = b1 < b2 ? b1 : b2;
+            const float t = sstep(0.02f, 0.55f, b);
+            return (2.0f * t - 1.0f) * 0.85f + 0.30f * (u + v);
+        }
+        case kFieldLiquid: {
+            // glossy liquid metal: same flowing warp field pushed wider so
+            // the palette reaches its extremes, and the shading stage turns
+            // specular (powi 16) with a broad glossy highlight.
+            return warpField(px, py, p) * 1.30f;
         }
         default:
             return warpField(px, py, p);
@@ -175,11 +208,31 @@ __host__ __device__ inline void fieldPixel(const FieldParams& p, int x, int y, i
     const float gy = (ty - t) * p.relief + (tcy - t) * p.relief * 0.35f;
     float diff = 0.733f + 0.40f * gx + 0.55f * gy;
     diff = diff < 0.0f ? 0.0f : (diff > 1.0f ? 1.0f : diff);
-    const float shade = 0.45f + 0.85f * diff;  // ambient + diffuse, ~[0.45, 1.30]
+    float shade = 0.45f + 0.85f * diff;
+
+    // Per-mode specular character. All integer powers (powi), so still
+    // bit-exact: liquid gets a broad glossy highlight, facets get hard
+    // glints on bevels, frost gets micro sparkle points.
+    if (p.mode == kFieldLiquid) {
+        shade += 0.45f * powi(diff, 16);   // broad glossy brightening
+    } else if (p.mode == kFieldFacet) {
+        shade += 0.85f * powi(diff, 48);   // hard facet glints
+    } else if (p.mode == kFieldFrost) {
+        shade += 1.10f * powi(diff, 90);   // micro sparkle
+    }
 
     rgb[0] *= shade;
     rgb[1] *= shade;
     rgb[2] *= shade;
+
+    // Liquid metal gets an ADDITIVE white glint on top of the palette: a
+    // reflection is light, not paint. Slightly warm-tinted like tungsten.
+    if (p.mode == kFieldLiquid) {
+        const float glint = powi(diff, 16) * 0.38f;
+        rgb[0] += glint;
+        rgb[1] += glint * 0.94f;
+        rgb[2] += glint * 0.82f;
+    }
 }
 
 }  // namespace art

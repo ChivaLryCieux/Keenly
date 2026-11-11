@@ -61,6 +61,14 @@ __host__ __device__ inline float sstep(float a, float b, float x)
     return t * t * (3.0f - 2.0f * t);
 }
 
+// Triangle-wave fold of the fractional part: 0 at .5, 1 at integers.
+// Continuous everywhere, polynomial + floor only.
+__host__ __device__ inline float triFrac(float f)
+{
+    const float fr = f - floorf(f);
+    return fr < 0.5f ? 2.0f * fr : 2.0f * (1.0f - fr);
+}
+
 // Pick a unit gradient from 8 fixed directions (cos/sin of k*pi/4), chosen
 // by hash bits. No trig, no tables in device code: CPU/GPU get identical
 // values. The 8-direction set is enough once fBm sums several octaves.
@@ -147,6 +155,69 @@ __host__ __device__ inline float fbm2Ridged(float x, float y, unsigned seed,
         y = ny;
     }
     return sum * (1.0f / norm) * 2.0f - 1.0f;
+}
+
+// ---- cellular (Worley) noise ----------------------------------------------
+// Voronoi cells: nearest feature point distance F1 and the cell seam
+// distance F2 - F1. sqrtf is IEEE correctly-rounded on both sides, so
+// cellular noise keeps the bit-exact CPU/GPU property.
+
+struct WorleyResult
+{
+    float f1, f2;  // nearest and second-nearest feature distance
+    float val;     // hashed tone of the winning cell (flat facet color)
+    int cx, cy;    // winning cell coords (facet identity, for per-facet light)
+};
+
+__host__ __device__ inline WorleyResult worley2(float x, float y, unsigned seed)
+{
+    WorleyResult r;
+    r.f1 = 1e9f;
+    r.f2 = 1e9f;
+    r.val = 0.0f;
+    r.cx = 0;
+    r.cy = 0;
+
+    const float xf = floorf(x);
+    const float yf = floorf(y);
+    const int xi = int(xf);
+    const int yi = int(yf);
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            const int cx = xi + dx;
+            const int cy = yi + dy;
+            // one jittered feature point per cell
+            const float px = float(cx) + hash01(cx, cy, seed);
+            const float py = float(cy) + hash01(cx, cy, seed + 1013u);
+            const float ddx = px - x;
+            const float ddy = py - y;
+            const float sq = ddx * ddx;  // split on purpose: no FMA fusion
+            const float d = sqrtf(sq + ddy * ddy);
+            if (d < r.f1) {
+                r.f2 = r.f1;
+                r.f1 = d;
+                r.val = hash01(cx, cy, seed + 2027u);
+                r.cx = cx;
+                r.cy = cy;
+            } else if (d < r.f2) {
+                r.f2 = d;
+            }
+        }
+    }
+    return r;
+}
+
+// Integer power by binary exponentiation: a fixed multiply sequence, so
+// bit-identical on CPU and GPU (never use libm pow here).
+__host__ __device__ inline float powi(float x, int n)
+{
+    float r = 1.0f;
+    while (n > 0) {
+        if (n & 1) r *= x;
+        x *= x;
+        n >>= 1;
+    }
+    return r;
 }
 
 }  // namespace art

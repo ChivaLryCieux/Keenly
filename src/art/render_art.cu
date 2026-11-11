@@ -218,7 +218,7 @@ static void printUsage()
         "  --depth  D     PNG bits per channel: 8 or 16 (default 16)\n"
         "  --out    P     output PNG path         (default out/field.png)\n"
         "  --preset P     mono|cinema|dusk|ember|ice|moss (default cinema)\n"
-        "  --mode   M     warp|ridge|bands|frost  field generator (default warp)\n"
+        "  --mode   M     warp|ridge|bands|frost|facet|prism|liquid (default warp)\n"
         "  --bands  N     contour frequency for bands mode (default 12)\n"
         "  --seed   S     deterministic seed      (default 7)\n"
         "  --view   F     noise extent across height (default 3.2)\n"
@@ -276,12 +276,16 @@ static bool parseArgs(int argc, char** argv, Args& a)
         } else if (key == "--mode") {
             const char* v = next("--mode");
             if (!v) return false;
-            if (std::strcmp(v, "warp") == 0)       a.field.mode = 0;
-            else if (std::strcmp(v, "ridge") == 0) a.field.mode = 1;
-            else if (std::strcmp(v, "bands") == 0) a.field.mode = 2;
-            else if (std::strcmp(v, "frost") == 0) a.field.mode = 3;
+            if (std::strcmp(v, "warp") == 0)        a.field.mode = 0;
+            else if (std::strcmp(v, "ridge") == 0)  a.field.mode = 1;
+            else if (std::strcmp(v, "bands") == 0)  a.field.mode = 2;
+            else if (std::strcmp(v, "frost") == 0)  a.field.mode = 3;
+            else if (std::strcmp(v, "facet") == 0)  a.field.mode = 4;
+            else if (std::strcmp(v, "prism") == 0)  a.field.mode = 5;
+            else if (std::strcmp(v, "liquid") == 0) a.field.mode = 6;
             else {
-                std::fprintf(stderr, "unknown mode: %s (use warp|ridge|bands|frost)\n", v);
+                std::fprintf(stderr, "unknown mode: %s "
+                             "(use warp|ridge|bands|frost|facet|prism|liquid)\n", v);
                 return false;
             }
         } else if (key == "--bands") {
