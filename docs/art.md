@@ -10,14 +10,22 @@
 ```
 fBm 梯度噪声 (5 octave，每 octave 旋转 14°，消网格对齐伪影)
   → 二级域扭曲 (two-level domain warp, after iq)     ← 有机流体感的来源
-  → 调色板 (5 stop 感知空间色带) + 双尺度浮雕光照      ← 粗法线建大形体 + 细法线做微质感
+  → 分层构图（三个尺度）:
+      宏观形体 (0.42x)  → 画面明暗布局 + 色相漂移      ← 「画」和「噪声贴图」的区别
+      主流场            → 流动结构
+      细节层 (2.3x)     → 表面变化
+  → 调色板 (6 stop 感知空间色带 + 中性过渡桥) + 双尺度浮雕光照
   → 后期链 (全部线性光):
       半分辨率 bright pass → 双程 9-tap 高斯 → halation 红晕 + bloom
       → split-tone 分离调色 (青影橙光 + 高光去饱和，真·调色机制)
+      → vividness 色度扩张 (绕亮度展开，灰色内容无影响)
       → 胶片颗粒 (双尺度聚团 + 三层色差 + 4L(1-L) 中间调响应)
       → 椭圆暗角 → ACES tonemap
   → sRGB 编码 + TPDF dither → 8/16-bit PNG
 ```
+
+分层构图是 v2 的核心：`--macro 0` 关掉（回到 v1 的平铺感），`--macro 1`
+全开（宏观明暗布局 + 全画幅左上方向光 + 色相漂移）。
 
 一切像素值都是 `(x, y, seed)` 的纯函数：同 seed 复现、CPU/GPU 一致、
 未来分块渲染无缝（为 600 DPI A1 留的口子）。
@@ -83,15 +91,10 @@ liquid 宽高光 + 白 glint、facet 硬闪、frost 微闪点。
 
 ## 九宫格阵容（runGrid cells 表）
 
-当前阵容按「风格跨度最大化」选（边缘密度 0.014–0.162，12 倍差距）：
-
-| | 列 1 | 列 2 | 列 3 |
-|---|---|---|---|
-| 行 1 | ice×facet 晶体切面 | mono×prism 黑白雪佛龙 | ember×prism 熔岩菱格 |
-| 行 2 | ice×frost 磨砂玻璃 | mono×frost 素磨砂 | dusk×liquid 油膜金属 |
-| 行 3 | ember×facet 碎裂熔岩 | cinema×liquid 青橙液态 | cinema×warp 有机锚点 |
-
-改 `render_art.cu` 里 `runGrid()` 的 cells 表即可换阵容。
+当前阵容：**有机电影家族的 9 个变体**（调色板 × 尺度/扭曲/对比度微调）——
+第一轮风格实验的结论是「好看」来自构图与调色，不是形状语言的种类，
+所以阵容回到验证过的家族里拉开参数。改 `render_art.cu` 里 `runGrid()`
+的 cells 表即可换阵容（支持每格 view/warp/contrast/relief 覆盖）。
 
 ## 质感旋钮
 
