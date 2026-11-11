@@ -28,6 +28,42 @@ __global__ void iconKernel(float* rgba, int w, int h, IconParams p)
     iconPixel(p, x, y, w, h, rgba + (size_t(y) * w + x) * 4);
 }
 
+// ---- Gray-Scott simulation (kFieldTuring) ----------------------------------
+// Jacobi ping-pong: every step reads only the previous buffers, so the
+// update order is deterministic (see turing.cuh for why this matters).
+
+__global__ void turingInitKernel(float* a, float* b, int res, unsigned seed)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= res || y >= res) return;
+    a[size_t(y) * res + x] = turingInitA(x, y, seed);
+    b[size_t(y) * res + x] = turingInitB(x, y, res, seed);
+}
+
+__global__ void turingStepKernel(float* aOut, float* bOut,
+                                 const float* aIn, const float* bIn,
+                                 int res, float f, float k)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= res || y >= res) return;
+
+    float a[9], b[9], na, nb;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            const int sx = wrapi(x + dx, res);
+            const int sy = wrapi(y + dy, res);
+            const int i = (dy + 1) * 3 + (dx + 1);
+            a[i] = aIn[size_t(sy) * res + sx];
+            b[i] = bIn[size_t(sy) * res + sx];
+        }
+    }
+    turingUpdate(a, b, f, k, &na, &nb);
+    aOut[size_t(y) * res + x] = na;
+    bOut[size_t(y) * res + x] = nb;
+}
+
 // ---- post chain (stage 2) --------------------------------------------------
 // Half-res bright pass, separable gaussian for the glow, then a per-pixel
 // compose: halation + the shared post tail (post.cuh: split-tone, grain,
@@ -124,12 +160,48 @@ __global__ void composeKernel(float* out, const float* field, const float* glow,
 
 void renderFieldGpu(float* dRgb, int w, int h, const FieldParams& p)
 {
+    // Gray-Scott path: simulate the B grid on the device first, then render
+    // the pixel shader sampling it. Buffers are freed after the field kernel,
+    // so the caller's FieldParams stays a pure description (turingTex is
+    // filled in on a local copy).
+    float *dA0 = nullptr, *dA1 = nullptr, *dB0 = nullptr, *dB1 = nullptr;
+    FieldParams q = p;
+    if (p.mode == kFieldTuring) {
+        const size_t cells = size_t(p.rdRes) * size_t(p.rdRes);
+        CUDA_CHECK(cudaMalloc(&dA0, cells * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&dA1, cells * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&dB0, cells * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&dB1, cells * sizeof(float)));
+
+        const dim3 block(16, 16);
+        const dim3 gridS((p.rdRes + 15) / 16, (p.rdRes + 15) / 16);
+        turingInitKernel<<<gridS, block>>>(dA0, dB0, p.rdRes, p.seed);
+        CUDA_CHECK(cudaGetLastError());
+
+        float* aIn = dA0; float* aOut = dA1;
+        float* bIn = dB0; float* bOut = dB1;
+        for (int it = 0; it < p.rdIters; ++it) {
+            turingStepKernel<<<gridS, block>>>(aOut, bOut, aIn, bIn, p.rdRes, p.rdF, p.rdK);
+            float* t;
+            t = aIn; aIn = aOut; aOut = t;
+            t = bIn; bIn = bOut; bOut = t;
+        }
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+        q.turingTex = bIn;  // final B channel after rdIters swaps
+    }
+
     const dim3 block(16, 16);
     const dim3 grid((w + int(block.x) - 1) / int(block.x),
                     (h + int(block.y) - 1) / int(block.y));
-    fieldKernel<<<grid, block>>>(dRgb, w, h, p);
+    fieldKernel<<<grid, block>>>(dRgb, w, h, q);
     CUDA_CHECK(cudaGetLastError());  // a failed launch must not look like success
     CUDA_CHECK(cudaDeviceSynchronize());
+
+    if (dA0) CUDA_CHECK(cudaFree(dA0));
+    if (dA1) CUDA_CHECK(cudaFree(dA1));
+    if (dB0) CUDA_CHECK(cudaFree(dB0));
+    if (dB1) CUDA_CHECK(cudaFree(dB1));
 }
 
 void renderIconGpu(float* dRgba, int w, int h, const IconParams& p)

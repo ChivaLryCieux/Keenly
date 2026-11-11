@@ -357,8 +357,12 @@ static void printUsage()
         "  --depth  D     PNG bits per channel: 8 or 16 (default 16)\n"
         "  --out    P     output PNG path         (default out/field.png)\n"
         "  --preset P     mono|cinema|dusk|ember|ice|moss (default cinema)\n"
-        "  --mode   M     warp|ridge|bands|frost|facet|prism|liquid (default warp)\n"
+        "  --mode   M     warp|ridge|bands|frost|facet|prism|liquid|turing (default warp)\n"
         "  --bands  N     contour frequency for bands mode (default 12)\n"
+        "  --rd-f   F     Gray-Scott feed rate   (turing mode, default 0.0545)\n"
+        "  --rd-k   F     Gray-Scott kill rate   (turing mode, default 0.062)\n"
+        "  --rd-res N     simulation grid size   (turing mode, default 256)\n"
+        "  --rd-iters N   simulation steps       (turing mode, default 3000)\n"
         "  --seed   S     deterministic seed      (default 7)\n"
         "  --view   F     noise extent across height (default 3.2)\n"
         "  --octaves N    fBm octaves             (default 5)\n"
@@ -434,9 +438,10 @@ static bool parseArgs(int argc, char** argv, Args& a)
             else if (std::strcmp(v, "facet") == 0)  a.field.mode = 4;
             else if (std::strcmp(v, "prism") == 0)  a.field.mode = 5;
             else if (std::strcmp(v, "liquid") == 0) a.field.mode = 6;
+            else if (std::strcmp(v, "turing") == 0) a.field.mode = 7;
             else {
                 std::fprintf(stderr, "unknown mode: %s "
-                             "(use warp|ridge|bands|frost|facet|prism|liquid)\n", v);
+                             "(use warp|ridge|bands|frost|facet|prism|liquid|turing)\n", v);
                 return false;
             }
         } else if (key == "--bands") {
@@ -444,6 +449,22 @@ static bool parseArgs(int argc, char** argv, Args& a)
             if (!v) return false;
             a.field.bands = float(std::atof(v));
             a.postSet |= kSetBands;
+        } else if (key == "--rd-f") {
+            const char* v = next("--rd-f");
+            if (!v) return false;
+            a.field.rdF = float(std::atof(v));
+        } else if (key == "--rd-k") {
+            const char* v = next("--rd-k");
+            if (!v) return false;
+            a.field.rdK = float(std::atof(v));
+        } else if (key == "--rd-res") {
+            const char* v = next("--rd-res");
+            if (!v) return false;
+            a.field.rdRes = std::atoi(v);
+        } else if (key == "--rd-iters") {
+            const char* v = next("--rd-iters");
+            if (!v) return false;
+            a.field.rdIters = std::atoi(v);
         } else if (key == "--seed") {
             const char* v = next("--seed");
             if (!v) return false;
@@ -577,6 +598,11 @@ static bool parseArgs(int argc, char** argv, Args& a)
         std::fprintf(stderr, "bad size or depth: %dx%d depth %d\n", a.width, a.height, a.depth);
         return false;
     }
+    if (a.field.rdRes < 16 || a.field.rdRes > 4096 || a.field.rdIters < 0) {
+        std::fprintf(stderr, "bad Gray-Scott params: res %d iters %d\n",
+                     a.field.rdRes, a.field.rdIters);
+        return false;
+    }
     if (a.tile < 64) {
         std::fprintf(stderr, "bad tile size: %d\n", a.tile);
         return false;
@@ -611,15 +637,21 @@ static bool runCheck(const keenly::FieldParams& p)
 // generator. This is what scripts\verify.ps1 runs after every change.
 static int runCheckAll()
 {
-    static const char* kModes[7] = {"warp", "ridge", "bands", "frost",
-                                    "facet", "prism", "liquid"};
+    static const char* kModes[8] = {"warp", "ridge", "bands", "frost",
+                                    "facet", "prism", "liquid", "turing"};
     bool allOk = true;
-    for (int m = 0; m < 7; ++m) {
+    for (int m = 0; m < 8; ++m) {
         keenly::FieldParams f;
         keenly::PostParams p;
         applyPreset(f, p, "cinema", 0u);
         f.mode = m;
         f.seed = 31u + unsigned(m) * 17u;
+        // turing: a small sim keeps the CPU reference fast; the gate proves
+        // the execution paths agree, not the artistic quality of 3000 steps.
+        if (m == keenly::kFieldTuring) {
+            f.rdRes = 96;
+            f.rdIters = 200;
+        }
         std::printf("mode %-6s ", kModes[m]);
         if (!runCheck(f)) allOk = false;
     }
