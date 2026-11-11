@@ -87,20 +87,24 @@ __host__ __device__ inline float warpField(float x, float y, const FieldParams& 
     return fbm2(x + w4 * rx, y + w4 * ry, s + 503u, oc, lac, gn);
 }
 
-// One pixel, linear RGB. Field value drives the palette; the finite-difference
-// gradient of the same field drives a fake normal (light fixed at upper-left),
-// so the flow structure gets relief shading - "matte embossed" depth.
+// One pixel, linear RGB. Field value drives the palette; finite-difference
+// gradients of the same field at TWO scales drive the fake normal (light
+// fixed at upper-left): a coarse slope models the big forms, a fine slope
+// adds micro relief - "matte embossed" depth instead of flat noise.
 __host__ __device__ inline void fieldPixel(const FieldParams& p, int x, int y, int w, int h,
                                            float* rgb)
 {
     const float aspect = float(w) / float(h);
     const float u = (float(x) + 0.5f) / float(h) - 0.5f * aspect;
     const float v = (float(y) + 0.5f) / float(h) - 0.5f;
-    const float step = 1.2f / float(h);  // shading gradient over ~1 pixel
+    const float step = 1.2f / float(h);   // fine relief over ~1 pixel
+    const float cstep = 3.6f / float(h);  // coarse relief over ~3 pixels
 
-    const float t  = warpField(u * p.view, v * p.view, p);
-    const float tx = warpField((u + step) * p.view, v * p.view, p);
-    const float ty = warpField(u * p.view, (v + step) * p.view, p);
+    const float t   = warpField(u * p.view, v * p.view, p);
+    const float tx  = warpField((u + step) * p.view, v * p.view, p);
+    const float ty  = warpField(u * p.view, (v + step) * p.view, p);
+    const float tcx = warpField((u + cstep) * p.view, v * p.view, p);
+    const float tcy = warpField(u * p.view, (v + cstep) * p.view, p);
 
     float tc = 0.5f + 0.5f * t * p.contrast;
     tc = tc < 0.0f ? 0.0f : (tc > 1.0f ? 1.0f : tc);
@@ -112,9 +116,10 @@ __host__ __device__ inline void fieldPixel(const FieldParams& p, int x, int y, i
     rgb[2] *= rgb[2];
 
     // Unnormalized fake normal (-gx, -gy, 1) dotted with a unit light:
-    // no sqrt, no clamped normalization, cheap and stable.
-    const float gx = (tx - t) * p.relief;
-    const float gy = (ty - t) * p.relief;
+    // no sqrt, no clamped normalization, cheap and stable. Fine slope at
+    // full strength, coarse slope at 0.35x so big forms stay smooth.
+    const float gx = (tx - t) * p.relief + (tcx - t) * p.relief * 0.35f;
+    const float gy = (ty - t) * p.relief + (tcy - t) * p.relief * 0.35f;
     float diff = 0.733f + 0.40f * gx + 0.55f * gy;
     diff = diff < 0.0f ? 0.0f : (diff > 1.0f ? 1.0f : diff);
     const float shade = 0.45f + 0.85f * diff;  // ambient + diffuse, ~[0.45, 1.30]

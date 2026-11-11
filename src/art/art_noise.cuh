@@ -105,7 +105,10 @@ __host__ __device__ inline float gradNoise2(float x, float y, unsigned seed)
 }
 
 // Fractal Brownian motion: summed octaves, normalized to ~[-1, 1].
-// gain 0.5 / lacunarity 2.0 are exact powers of two (no rounding drift).
+// gain 0.5 / lacunarity 2.0 are exact powers of two. Every octave rotates
+// the domain 14 degrees (fixed constants, bit-exact multiplies) so the
+// octave lattices never align: kills grid-aligned anisotropy streaks that
+// an unrotated fBm shows in smooth areas.
 __host__ __device__ inline float fbm2(float x, float y, unsigned seed,
                                       int octaves, float lacunarity, float gain)
 {
@@ -116,13 +119,16 @@ __host__ __device__ inline float fbm2(float x, float y, unsigned seed,
         sum += amp * gradNoise2(x, y, seed + uint32_t(o) * 1013u);
         norm += amp;
         amp *= gain;
-        x *= lacunarity;
-        y *= lacunarity;
+        const float nx = (x * 0.97029573f - y * 0.24192190f) * lacunarity;
+        const float ny = (x * 0.24192190f + y * 0.97029573f) * lacunarity;
+        x = nx;
+        y = ny;
     }
     return sum * (1.0f / norm);
 }
 
 // Ridged fBm: |noise| inverted into sharp creases (mountain / marble veins).
+// Same per-octave rotation as fbm2.
 __host__ __device__ inline float fbm2Ridged(float x, float y, unsigned seed,
                                            int octaves, float lacunarity, float gain)
 {
@@ -135,8 +141,10 @@ __host__ __device__ inline float fbm2Ridged(float x, float y, unsigned seed,
         sum += amp * n * n;
         norm += amp;
         amp *= gain;
-        x *= lacunarity;
-        y *= lacunarity;
+        const float nx = (x * 0.97029573f - y * 0.24192190f) * lacunarity;
+        const float ny = (x * 0.24192190f + y * 0.97029573f) * lacunarity;
+        x = nx;
+        y = ny;
     }
     return sum * (1.0f / norm) * 2.0f - 1.0f;
 }
