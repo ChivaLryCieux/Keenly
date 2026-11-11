@@ -421,15 +421,15 @@ static int runGrid(const Args& args)
         unsigned seed;
     };
     static const Cell cells[9] = {
-        {"cinema", art::kFieldWarp,  7u},   // the loved teal-orange smoke
-        {"dusk",   art::kFieldWarp,  21u},  // indigo-magenta smoke
-        {"moss",   art::kFieldWarp,  33u},  // organic green flow
-        {"ember",  art::kFieldRidge, 11u},  // fire marble veins
-        {"ice",    art::kFieldRidge, 5u},   // glacier strata
-        {"cinema", art::kFieldBands, 3u},   // teal-orange flow lines
-        {"moss",   art::kFieldBands, 13u},  // topographic contours
-        {"ice",    art::kFieldFrost, 8u},   // frosted glass
-        {"mono",   art::kFieldFrost, 2u}    // matte monochrome
+        {"ice",    art::kFieldFacet,  5u},   // austere crystal facets
+        {"mono",   art::kFieldPrism,  6u},   // black-white chevron grid
+        {"ember",  art::kFieldPrism,  21u},  // molten diamond lattice
+        {"ice",    art::kFieldFrost,  8u},   // frosted glass
+        {"mono",   art::kFieldFrost,  2u},   // matte monochrome frost
+        {"dusk",   art::kFieldLiquid, 3u},   // oil-slick metal
+        {"cinema", art::kFieldLiquid, 7u},   // teal-orange liquid metal
+        {"ember",  art::kFieldFacet,  11u},  // cracked lava
+        {"cinema", art::kFieldWarp,   7u}    // anchor: the loved organic look
     };
 
     const int tile = args.tile;

@@ -65,17 +65,33 @@ powershell -ExecutionPolicy Bypass -File scripts\build_direct.ps1   # 全量
 
 CLI 显式参数优先于 preset 默认值（`render_art.cu` 用 set 位图跟踪）。
 
-## 四个场生成器（--mode）
+## 七个场生成器（--mode）
 
 | mode | 数学 | 质感 |
 |---|---|---|
 | `warp` | 二级域扭曲 fBm | 流动的烟雾 / 有机流体（默认） |
 | `ridge` | 扭曲的 ridged fBm | 大理石纹 / 岩层 |
 | `bands` | warpField 的三角波等值线 | 流线条纹 / 木纹 / 等高线 |
-| `frost` | 高频 fBm + 逐像素斑点 | 磨砂 / 喷砂表面 |
+| `frost` | 细 Worley 晶面 + 斑点 + powi-90 微闪 | **磨砂玻璃**（晶面磨砂，不是软噪声） |
+| `facet` | Worley 细胞 + 每面受光 + 亮缝 | **凛冽几何**：晶体切面 / 碎裂 |
+| `prism` | 30° 旋转坐标上的三角波折叠 | **凛冽几何**：雪佛龙 / 菱格栅（直方图双峰） |
+| `liquid` | warpField 宽场 + powi-16 高光 + 加性 glint | **光照质感**：液态金属 / 油膜 |
 
-全部是 `(x, y, seed)` 纯函数、纯多项式运算（bands 的折叠也是 frac+折线，
-无三角函数）——CPU/GPU 逐位一致由此成立。
+全部是 `(x, y, seed)` 纯函数、纯多项式 + IEEE sqrt 运算（Worley 距离、
+整数幂高光）——CPU/GPU 逐位一致由此成立。高光的性格按模式分：
+liquid 宽高光 + 白 glint、facet 硬闪、frost 微闪点。
+
+## 九宫格阵容（runGrid cells 表）
+
+当前阵容按「风格跨度最大化」选（边缘密度 0.014–0.162，12 倍差距）：
+
+| | 列 1 | 列 2 | 列 3 |
+|---|---|---|---|
+| 行 1 | ice×facet 晶体切面 | mono×prism 黑白雪佛龙 | ember×prism 熔岩菱格 |
+| 行 2 | ice×frost 磨砂玻璃 | mono×frost 素磨砂 | dusk×liquid 油膜金属 |
+| 行 3 | ember×facet 碎裂熔岩 | cinema×liquid 青橙液态 | cinema×warp 有机锚点 |
+
+改 `render_art.cu` 里 `runGrid()` 的 cells 表即可换阵容。
 
 ## 质感旋钮
 
@@ -103,8 +119,8 @@ CLI 显式参数优先于 preset 默认值（`render_art.cu` 用 set 位图跟�
 .\bin\render_art.exe --grid out\showcase_grid.png --tile 800 --depth 16
 ```
 
-九宫格每格都是完整管线渲染（含各自的位级门禁），格子布局在
-`render_art.cu` 的 `runGrid()` 里，改 cells 表就能换展示组合。
+九宫格每格都是完整管线渲染（含各自的位级门禁），格子阵容在
+`render_art.cu` 的 `runGrid()` 里。
 
 ## 验证门禁（和 bench_matmul 同一哲学，但更严）
 
