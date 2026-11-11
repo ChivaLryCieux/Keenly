@@ -11,11 +11,31 @@
 // Coordinates are resolution-independent: the pattern spans `view` noise
 // units across the image height, so 512px previews and the full A1 render
 // show the same picture at different detail densities.
+//
+// Pipeline stage 1 (this file): warped fBm field -> palette -> relief shading.
+// Output is LINEAR RGB (possibly > 1 in highlights); tonemap / grain / dither
+// are stage 2 (post) and encoding happens at PNG write time.
 
 #include "art_noise.cuh"
 
 namespace art
 {
+
+// Color ramp: up to 5 stops, strictly increasing positions. Stops live in
+// perceptual (sRGB-like) space - easier to author - and paletteLookup()
+// linearizes with gamma 2.0 (a single multiply: exact on CPU and GPU).
+struct Palette
+{
+    int count = 2;
+    float pos[5] = {0.0f, 1.0f, 0.0f, 0.0f, 0.0f};
+    float rgb[5][3] = {
+        {0.0f, 0.0f, 0.0f},
+        {1.0f, 1.0f, 1.0f},
+        {0.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f}
+    };
+};
 
 struct FieldParams
 {
@@ -25,8 +45,29 @@ struct FieldParams
     float lacunarity = 2.0f; // exact power of two: no rounding drift
     float gain = 0.5f;       // exact power of two
     float warp = 1.2f;       // domain warp strength
-    float contrast = 1.4f;   // field shaping before display
+    float contrast = 1.4f;   // field shaping before the palette
+    float relief = 2.5f;     // height-to-normal strength for the shading
+    Palette pal;             // color ramp (perceptual stops)
 };
+
+__host__ __device__ inline void paletteLookup(const Palette& pal, float t, float* rgb)
+{
+    const int last = pal.count - 1;
+    if (t <= pal.pos[0]) t = pal.pos[0];
+    if (t >= pal.pos[last]) {
+        rgb[0] = pal.rgb[last][0];
+        rgb[1] = pal.rgb[last][1];
+        rgb[2] = pal.rgb[last][2];
+        return;
+    }
+    int i = 0;
+    while (i + 1 < pal.count && t > pal.pos[i + 1]) ++i;
+    const float span = pal.pos[i + 1] - pal.pos[i];
+    float u = (t - pal.pos[i]) / span;
+    u = u * u * (3.0f - 2.0f * u);  // smoothstep: no visible band at stops
+    for (int c = 0; c < 3; ++c)
+        rgb[c] = pal.rgb[i][c] + u * (pal.rgb[i + 1][c] - pal.rgb[i][c]);
+}
 
 // Two-level domain warp (after iq): q bends the first lookup, r bends the
 // second, and the final fBm is sampled through r. This is what turns plain
@@ -46,22 +87,41 @@ __host__ __device__ inline float warpField(float x, float y, const FieldParams& 
     return fbm2(x + w4 * rx, y + w4 * ry, s + 503u, oc, lac, gn);
 }
 
-// One pixel, linear RGB. Stage-1 look: the warped field as a luminance ramp.
-// Palette / shading / grain land in later stages on top of this.
+// One pixel, linear RGB. Field value drives the palette; the finite-difference
+// gradient of the same field drives a fake normal (light fixed at upper-left),
+// so the flow structure gets relief shading - "matte embossed" depth.
 __host__ __device__ inline void fieldPixel(const FieldParams& p, int x, int y, int w, int h,
                                            float* rgb)
 {
     const float aspect = float(w) / float(h);
     const float u = (float(x) + 0.5f) / float(h) - 0.5f * aspect;
     const float v = (float(y) + 0.5f) / float(h) - 0.5f;
+    const float step = 1.2f / float(h);  // shading gradient over ~1 pixel
 
-    const float f = warpField(u * p.view, v * p.view, p);
-    float t = 0.5f + 0.5f * f * p.contrast;
-    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    const float t  = warpField(u * p.view, v * p.view, p);
+    const float tx = warpField((u + step) * p.view, v * p.view, p);
+    const float ty = warpField(u * p.view, (v + step) * p.view, p);
 
-    rgb[0] = t;
-    rgb[1] = t;
-    rgb[2] = t;
+    float tc = 0.5f + 0.5f * t * p.contrast;
+    tc = tc < 0.0f ? 0.0f : (tc > 1.0f ? 1.0f : tc);
+    paletteLookup(p.pal, tc, rgb);
+
+    // perceptual -> linear (gamma 2.0, one multiply, bit-exact on both sides)
+    rgb[0] *= rgb[0];
+    rgb[1] *= rgb[1];
+    rgb[2] *= rgb[2];
+
+    // Unnormalized fake normal (-gx, -gy, 1) dotted with a unit light:
+    // no sqrt, no clamped normalization, cheap and stable.
+    const float gx = (tx - t) * p.relief;
+    const float gy = (ty - t) * p.relief;
+    float diff = 0.733f + 0.40f * gx + 0.55f * gy;
+    diff = diff < 0.0f ? 0.0f : (diff > 1.0f ? 1.0f : diff);
+    const float shade = 0.45f + 0.85f * diff;  // ambient + diffuse, ~[0.45, 1.30]
+
+    rgb[0] *= shade;
+    rgb[1] *= shade;
+    rgb[2] *= shade;
 }
 
 }  // namespace art
