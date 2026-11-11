@@ -8,12 +8,13 @@
 ## 管线总览
 
 ```
-fBm 梯度噪声 (5 octave)
+fBm 梯度噪声 (5 octave，每 octave 旋转 14°，消网格对齐伪影)
   → 二级域扭曲 (two-level domain warp, after iq)     ← 有机流体感的来源
-  → 调色板 (5 stop 感知空间色带) + 浮雕光照            ← 高度场梯度 → 伪法线 → 点光
+  → 调色板 (5 stop 感知空间色带) + 双尺度浮雕光照      ← 粗法线建大形体 + 细法线做微质感
   → 后期链 (全部线性光):
-      半分辨率 bright pass → 9-tap 高斯 → halation 红晕 + bloom
-      → 胶片颗粒 (聚团 + 4L(1-L) 中间调响应)
+      半分辨率 bright pass → 双程 9-tap 高斯 → halation 红晕 + bloom
+      → split-tone 分离调色 (青影橙光 + 高光去饱和，真·调色机制)
+      → 胶片颗粒 (双尺度聚团 + 三层色差 + 4L(1-L) 中间调响应)
       → 椭圆暗角 → ACES tonemap
   → sRGB 编码 + TPDF dither → 8/16-bit PNG
 ```
@@ -70,29 +71,44 @@ CLI 显式参数优先于 preset 默认值（`render_art.cu` 用 set 位图跟�
 | `--halation` | 高光红晕 | 胶片高光溢出（电影感的关键） |
 | `--bloom` | 中性泛光 | 更柔的高光 |
 | `--vignette` | 暗角 | 更聚焦的画面 |
+| `--split-tone` | 青影橙光分离调色 + 高光去饱和 | 更强的 teal-orange 调色（0 关闭） |
 | `--warp` / `--view` | 域扭曲强度 / 图案尺度 | 更流体 / 更宏观的结构 |
 | `--relief` | 浮雕光照强度 | 更强的立体质感（磨砂蚀刻感） |
+
+## 系列出图
+
+像素是 `(x, y, seed)` 纯函数，**换 seed 就是换构图，风格不变**——同一 preset
+可以出一整个系列：
+
+```powershell
+.\bin\render_art.exe --preset cinema --seed 21 --width 2560 --height 1072 --out out\cinema_seed21.png
+.\bin\render_art.exe --preset cinema --seed 42 --width 2560 --height 1072 --out out\cinema_seed42.png
+```
 
 ## 验证门禁（和 bench_matmul 同一哲学）
 
 每次渲染前自动跑 `check`：同一个 pixel shader 在 CPU（串行）和 GPU（并行）
-各跑一遍，relL2 必须 < **1e-4**，否则 exit 1。
+各跑一遍，relL2 必须 < **2e-4**，否则 exit 1。
 
-- 实测舍入底噪：**1.4e-5**（fast-math + FMA 收缩）；关掉 fast-math 是 6e-6，
-  但项目统一用 fast-math，且真实 bug 量级在 1e-2 以上，1e-4 预算有 ~100x 检出余量。
-- post 链（颗粒/模糊/暗角）不在数值门禁内——它们的效果用统计验证：
-  高频残差（颗粒）、暗角 A/B（边角 ×0.85、中心 ×1.0）、行内唯一值数（色带）。
+- 实测舍入底噪：**6.5e-5**（fast-math + FMA 收缩，随浮点运算链长度增长：
+  5 次 field 求值 + 每 octave 旋转后从 1.4e-5 涨到这里）；真实 bug 量级在
+  1e-2 以上，2e-4 预算仍有 ~50x 检出余量。阈值由实测底噪和 bug 量级共同定，
+  不能拍脑袋。
+- post 链（颗粒/模糊/暗角/调色）不在数值门禁内——它们的效果用统计验证：
+  高频残差（颗粒）、暗角 A/B（边角 ×0.85、中心 ×1.0）、行内唯一值数（色带）、
+  饱和度变化（split-tone 生效验证）。
 
 ## 实测（RTX 2080 SUPER）
 
 | 输出 | 尺寸 | field | post | 备注 |
 |---|---|---|---|---|
-| 电影画幅 | 2560×1072 | 16.0 ms | 1.3 ms | 16-bit PNG 16MB |
-| A1 海报预览 | 2000×2832 | 24.4 ms | 2.2 ms | 16-bit PNG 32MB |
-| A1 300 DPI | 7014×9933 | 196 ms | 23 ms | **70MP 共 219ms**，8-bit PNG 200MB |
+| 电影画幅 | 2560×1072 | 36 ms | 1.5 ms | 16-bit PNG 16MB |
+| A1 海报预览 | 2000×2832 | 41 ms | 2.2 ms | 16-bit PNG 32MB |
+| A1 300 DPI | 7014×9933 | ~1.2 s | ~0.15 s | **70MP**，8-bit PNG 200MB |
 
-渲染不是瓶颈，PNG 写盘是。色彩统计：cinema 均值 RGB (0.25, 0.41, 0.43)
-（青调主导）、dusk (0.52, 0.23, 0.48)（品红/靛蓝），颗粒高频残差 0.04–0.09。
+（quality 轮后 field 从 3 次求值变 5 次 + 每 octave 旋转，field 时间约 ×2；
+渲染仍不是瓶颈，PNG 写盘是。）色彩统计：cinema 均值 RGB (0.18, 0.42, 0.48)
+（split-tone 后青调更深、暖高光更活，饱和度 0.35→0.38），dusk (0.51, 0.19, 0.58)。
 
 ## 显存现实 & 分块渲染（todo）
 
