@@ -35,6 +35,8 @@ struct Args
     bool post = true;
     unsigned postSet = 0;  // which params were explicitly set on the CLI
     std::string preset = "cinema";
+    std::string grid;      // non-empty: render the 3x3 showcase to this path
+    int tile = 800;        // showcase cell size
     art::FieldParams field;
     art::PostParams postp;
     std::string out = "out/field.png";
@@ -178,6 +180,34 @@ static inline float tpdfDither(uint32_t idx, float step)
     return (r1 - r2) * step;
 }
 
+// Linear RGB buffer -> PNG (sRGB encode + TPDF dither + quantize).
+static bool writeImage(const std::string& path, int w, int h, int depth,
+                       const std::vector<float>& linear)
+{
+    std::error_code ec;
+    std::filesystem::path outPath(path);
+    if (outPath.has_parent_path())
+        std::filesystem::create_directories(outPath.parent_path(), ec);
+
+    const size_t n = size_t(w) * size_t(h) * 3;
+    if (depth == 16) {
+        std::vector<uint16_t> img(n);
+        for (size_t i = 0; i < n; ++i) {
+            float v = srgbEncode(linear[i]) + tpdfDither(uint32_t(i), 1.0f / 65535.0f);
+            v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+            img[i] = uint16_t(v * 65535.0f + 0.5f);
+        }
+        return art::writePng(path, w, h, 16, img.data());
+    }
+    std::vector<uint8_t> img(n);
+    for (size_t i = 0; i < n; ++i) {
+        float v = srgbEncode(linear[i]) + tpdfDither(uint32_t(i), 1.0f / 255.0f);
+        v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+        img[i] = uint8_t(v * 255.0f + 0.5f);
+    }
+    return art::writePng(path, w, h, 8, img.data());
+}
+
 static void printUsage()
 {
     std::printf(
@@ -204,7 +234,9 @@ static void printUsage()
         "  --vignette F   corner darkening        (default 0.35)\n"
         "  --split-tone F teal shadows / warm highs grade (default 0.35)\n"
         "  --no-post      skip grain/glow/vignette/tonemap (raw field)\n"
-        "  --no-check     skip the CPU reference gate\n");
+        "  --no-check     skip the CPU reference gate\n"
+        "  --grid   P     render a 3x3 style showcase grid to PNG path P\n"
+        "  --tile   N     showcase cell size in pixels (default 800)\n");
 }
 
 static bool parseArgs(int argc, char** argv, Args& a)
@@ -324,6 +356,14 @@ static bool parseArgs(int argc, char** argv, Args& a)
             a.postSet |= kSetSplitTone;
         } else if (key == "--no-post") {
             a.post = false;
+        } else if (key == "--grid") {
+            const char* v = next("--grid");
+            if (!v) return false;
+            a.grid = v;
+        } else if (key == "--tile") {
+            const char* v = next("--tile");
+            if (!v) return false;
+            a.tile = std::atoi(v);
         } else if (key == "--no-check") {
             a.check = false;
         } else {
@@ -333,6 +373,10 @@ static bool parseArgs(int argc, char** argv, Args& a)
     }
     if (a.width <= 0 || a.height <= 0 || (a.depth != 8 && a.depth != 16)) {
         std::fprintf(stderr, "bad size or depth: %dx%d depth %d\n", a.width, a.height, a.depth);
+        return false;
+    }
+    if (a.tile < 64) {
+        std::fprintf(stderr, "bad tile size: %d\n", a.tile);
         return false;
     }
     return true;
@@ -361,6 +405,77 @@ static bool runCheck(const art::FieldParams& p)
     return d.maxAbs == 0.0;
 }
 
+// 3x3 showcase grid: nine style cells (generator x palette x seed) rendered
+// tile by tile and pasted into one image with a dark gap grid. Each cell is
+// a full pipeline render (field + post) and runs the bit-exact verify gate.
+static int runGrid(const Args& args)
+{
+    struct Cell
+    {
+        const char* preset;
+        int mode;
+        unsigned seed;
+    };
+    static const Cell cells[9] = {
+        {"cinema", art::kFieldWarp,  7u},   // the loved teal-orange smoke
+        {"dusk",   art::kFieldWarp,  21u},  // indigo-magenta smoke
+        {"moss",   art::kFieldWarp,  33u},  // organic green flow
+        {"ember",  art::kFieldRidge, 11u},  // fire marble veins
+        {"ice",    art::kFieldRidge, 5u},   // glacier strata
+        {"cinema", art::kFieldBands, 3u},   // teal-orange flow lines
+        {"moss",   art::kFieldBands, 13u},  // topographic contours
+        {"ice",    art::kFieldFrost, 8u},   // frosted glass
+        {"mono",   art::kFieldFrost, 2u}    // matte monochrome
+    };
+
+    const int tile = args.tile;
+    const int gap = 16;
+    const int gw = 3 * tile + 4 * gap;
+    std::vector<float> img(size_t(gw) * size_t(gw) * 3, 0.018f);  // gap background
+    std::vector<float> cellImg(size_t(tile) * size_t(tile) * 3);
+
+    for (int i = 0; i < 9; ++i) {
+        art::FieldParams f;
+        art::PostParams p;
+        applyPreset(f, p, cells[i].preset, 0u);
+        f.mode = cells[i].mode;
+        f.seed = cells[i].seed;
+        p.seed = cells[i].seed;
+
+        std::printf("cell %d : %-6s mode %d seed %u\n", i + 1, cells[i].preset,
+                    f.mode, f.seed);
+        if (args.check && !runCheck(f)) {
+            std::fprintf(stderr, "CHECK FAILED on cell %d\n", i + 1);
+            return 1;
+        }
+
+        const size_t n = size_t(tile) * size_t(tile) * 3;
+        float *dField = nullptr, *dOut = nullptr;
+        CUDA_CHECK(cudaMalloc(&dField, n * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&dOut, n * sizeof(float)));
+        art::renderFieldGpu(dField, tile, tile, f);
+        art::renderPostGpu(dOut, dField, tile, tile, p);
+        CUDA_CHECK(cudaMemcpy(cellImg.data(), dOut, n * sizeof(float),
+                              cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaFree(dField));
+        CUDA_CHECK(cudaFree(dOut));
+
+        const int cx = gap + (i % 3) * (tile + gap);
+        const int cy = gap + (i / 3) * (tile + gap);
+        for (int y = 0; y < tile; ++y)
+            std::memcpy(&img[(size_t(cy + y) * gw + cx) * 3],
+                        &cellImg[size_t(y) * tile * 3],
+                        size_t(tile) * 3 * sizeof(float));
+    }
+
+    if (!writeImage(args.grid, gw, gw, args.depth, img)) {
+        std::fprintf(stderr, "failed to write %s\n", args.grid.c_str());
+        return 1;
+    }
+    std::printf("wrote  : %s  (%dx%d, %d-bit)\n", args.grid.c_str(), gw, gw, args.depth);
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     Args args;
@@ -371,8 +486,12 @@ int main(int argc, char** argv)
 
     cudaDeviceProp prop{};
     CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
-    applyPreset(args.field, args.postp, args.preset, args.postSet);
     std::printf("device : %s\n", prop.name);
+
+    if (!args.grid.empty())
+        return runGrid(args);
+
+    applyPreset(args.field, args.postp, args.preset, args.postSet);
     std::printf("render : %dx%d  preset %s  mode %d  seed %u  view %.2f  warp %.2f  octaves %d\n",
                 args.width, args.height, args.preset.c_str(), args.field.mode,
                 args.field.seed, args.field.view, args.field.warp, args.field.octaves);
@@ -413,31 +532,7 @@ int main(int argc, char** argv)
     }
     CUDA_CHECK(cudaFree(dField));
 
-    std::error_code ec;
-    std::filesystem::path outPath(args.out);
-    if (outPath.has_parent_path())
-        std::filesystem::create_directories(outPath.parent_path(), ec);
-
-    bool ok = false;
-    if (args.depth == 16) {
-        std::vector<uint16_t> img(pixels * 3);
-        for (size_t i = 0; i < pixels * 3; ++i) {
-            float v = srgbEncode(hRgb[i]) + tpdfDither(uint32_t(i), 1.0f / 65535.0f);
-            v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
-            img[i] = uint16_t(v * 65535.0f + 0.5f);
-        }
-        ok = art::writePng(args.out, args.width, args.height, 16, img.data());
-    } else {
-        std::vector<uint8_t> img(pixels * 3);
-        for (size_t i = 0; i < pixels * 3; ++i) {
-            float v = srgbEncode(hRgb[i]) + tpdfDither(uint32_t(i), 1.0f / 255.0f);
-            v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
-            img[i] = uint8_t(v * 255.0f + 0.5f);
-        }
-        ok = art::writePng(args.out, args.width, args.height, 8, img.data());
-    }
-
-    if (!ok) {
+    if (!writeImage(args.out, args.width, args.height, args.depth, hRgb)) {
         std::fprintf(stderr, "failed to write %s\n", args.out.c_str());
         return 1;
     }
