@@ -111,19 +111,43 @@ __global__ void composeKernel(float* out, const float* field, const float* glow,
     c[1] += g[1] * p.halation * 0.45f + g[1] * p.bloom;
     c[2] += g[2] * p.halation * 0.28f + g[2] * p.bloom;
 
-    // Film grain: clumped (smooth noise at grainScale px) + a little fine
-    // white, amplitude modulated by a film-like midtone response curve
-    // 4*L*(1-L): strongest in the midtones, invisible in blacks and whites.
-    const float L = luminance(c);
-    const float lc = L < 0.0f ? 0.0f : (L > 1.0f ? 1.0f : L);
+    // Split-tone grade (the real teal-orange mechanism, on top of the
+    // palette): shadows drift cool, highlights drift warm, and the extreme
+    // highlights desaturate toward neutral like film's shoulder does.
+    {
+        float L = luminance(c);
+        L = L < 0.0f ? 0.0f : (L > 1.0f ? 1.0f : L);
+        const float k = sstep(0.05f, 0.55f, L) * p.splitTone;
+        const float kh = sstep(0.75f, 1.25f, L) * p.splitTone;
+        c[0] *= 0.85f + 0.30f * k;
+        c[2] *= 1.15f - 0.30f * k;
+        // highlight desaturation: mix toward luminance by kh * 0.5
+        const float m = kh * 0.5f;
+        c[0] += (L - c[0]) * m;
+        c[1] += (L - c[1]) * m;
+        c[2] += (L - c[2]) * m;
+    }
+
+    // Film grain: clumped at TWO scales (fine blobs + wide silver clumps)
+    // with per-channel fine components - real film has one grain layer per
+    // emulsion layer, so channels are slightly decorrelated. Amplitude is
+    // modulated by a film-like midtone response curve 4*L*(1-L): strongest
+    // in the midtones, invisible in blacks and whites.
+    const float L2 = luminance(c);
+    const float lc = L2 < 0.0f ? 0.0f : (L2 > 1.0f ? 1.0f : L2);
     const float response = 4.0f * lc * (1.0f - lc);
-    const float blob = gradNoise2(float(x) / p.grainScale, float(y) / p.grainScale,
-                                  p.seed + 7717u);
-    const float fine = hash01(x, y, p.seed + 9931u) * 2.0f - 1.0f;
-    const float grain = (0.7f * blob + 0.3f * fine) * p.grain * response;
-    c[0] += grain;
-    c[1] += grain;
-    c[2] += grain;
+    const float blob = 0.6f * gradNoise2(float(x) / p.grainScale, float(y) / p.grainScale,
+                                         p.seed + 7717u)
+                     + 0.4f * gradNoise2(float(x) / (p.grainScale * 2.7f),
+                                         float(y) / (p.grainScale * 2.7f),
+                                         p.seed + 5501u);
+    const float fineR = hash01(x, y, p.seed + 9931u) * 2.0f - 1.0f;
+    const float fineG = hash01(x, y, p.seed + 13007u) * 2.0f - 1.0f;
+    const float fineB = hash01(x, y, p.seed + 16223u) * 2.0f - 1.0f;
+    const float amp = p.grain * response;
+    c[0] += amp * (0.70f * blob + 0.35f * fineR);
+    c[1] += amp * (0.70f * blob + 0.30f * fineG);
+    c[2] += amp * (0.70f * blob + 0.25f * fineB);
 
     // Vignette: elliptical, follows the frame shape.
     const float rx = (float(x) + 0.5f) / float(w) * 2.0f - 1.0f;
@@ -167,6 +191,8 @@ void renderPostGpu(float* dOut, const float* dField, int w, int h, const PostPar
     brightKernel<<<gridH, block>>>(dBright, dField, w, h, hw, hh, p);
     blurKernel<<<gridH, block>>>(dTmp, dBright, hw, hh, 1);      // horizontal
     blurKernel<<<gridH, block>>>(dBright, dTmp, hw, hh, 0);      // vertical
+    blurKernel<<<gridH, block>>>(dTmp, dBright, hw, hh, 1);      // 2nd pass: wider,
+    blurKernel<<<gridH, block>>>(dBright, dTmp, hw, hh, 0);      // softer glow
     composeKernel<<<gridF, block>>>(dOut, dField, dBright, w, h, p);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());

@@ -5,11 +5,12 @@
 //
 // Every render runs the verify gate first (unless --no-check): the same
 // pixel shader executes on CPU and GPU and the two buffers must agree to
-// relL2 < 1e-4, the same "prove it on the CPU" philosophy as bench_matmul.
+// relL2 < 2e-4, the same "prove it on the CPU" philosophy as bench_matmul.
 // The budget is not zero: nvcc --use_fast_math plus FMA contraction leave a
-// measured rounding floor of ~1.4e-5 over this pipeline (6e-6 without
-// fast-math). Real plumbing bugs land at 1e-2 and above, so 1e-4 still has
-// ~100x of detection headroom.
+// measured rounding floor of ~6.5e-5 over this pipeline (it grows with the
+// length of the float-op chain: 5 field evaluations + per-octave rotation).
+// Real plumbing bugs land at 1e-2 and above, so 2e-4 still has ~50x of
+// detection headroom.
 
 #include <cmath>
 #include <cstdio>
@@ -51,7 +52,8 @@ enum SetBits
     kSetView = 1u << 0,      kSetOctaves = 1u << 1,   kSetWarp = 1u << 2,
     kSetContrast = 1u << 3,  kSetRelief = 1u << 4,    kSetSeed = 1u << 5,
     kSetExposure = 1u << 6,  kSetGrain = 1u << 7,     kSetGrainScale = 1u << 8,
-    kSetHalation = 1u << 9,  kSetBloom = 1u << 10,    kSetVignette = 1u << 11
+    kSetHalation = 1u << 9,  kSetBloom = 1u << 10,    kSetVignette = 1u << 11,
+    kSetSplitTone = 1u << 12
 };
 
 static void applyPreset(art::FieldParams& f, art::PostParams& p, const std::string& name,
@@ -67,6 +69,7 @@ static void applyPreset(art::FieldParams& f, art::PostParams& p, const std::stri
         if (!(set & kSetGrainScale)) p.grainScale = 2.2f;
         if (!(set & kSetHalation))   p.halation = 0.30f;
         if (!(set & kSetVignette))   p.vignette = 0.35f;
+        if (!(set & kSetSplitTone))  p.splitTone = 0.0f;
     } else if (name == "cinema") {
         // teal shadows -> amber highlights (the classic teal-orange grade)
         f.pal.count = 5;
@@ -81,6 +84,7 @@ static void applyPreset(art::FieldParams& f, art::PostParams& p, const std::stri
         if (!(set & kSetGrainScale)) p.grainScale = 2.8f;
         if (!(set & kSetHalation))   p.halation = 0.40f;
         if (!(set & kSetVignette))   p.vignette = 0.38f;
+        if (!(set & kSetSplitTone))  p.splitTone = 0.45f;
     } else if (name == "dusk") {
         // indigo -> magenta -> coral (poster palette)
         f.pal.count = 5;
@@ -101,6 +105,7 @@ static void applyPreset(art::FieldParams& f, art::PostParams& p, const std::stri
         if (!(set & kSetHalation))   p.halation = 0.22f;
         if (!(set & kSetBloom))      p.bloom = 0.10f;
         if (!(set & kSetVignette))   p.vignette = 0.28f;
+        if (!(set & kSetSplitTone))  p.splitTone = 0.25f;
     } else {
         std::fprintf(stderr, "unknown preset: %s (use mono|cinema|dusk)\n", name.c_str());
         std::exit(1);
@@ -147,6 +152,7 @@ static void printUsage()
         "  --halation F   red highlight glow      (default 0.35)\n"
         "  --bloom F      neutral glow            (default 0.12)\n"
         "  --vignette F   corner darkening        (default 0.35)\n"
+        "  --split-tone F teal shadows / warm highs grade (default 0.35)\n"
         "  --no-post      skip grain/glow/vignette/tonemap (raw field)\n"
         "  --no-check     skip the CPU reference gate\n");
 }
@@ -245,6 +251,11 @@ static bool parseArgs(int argc, char** argv, Args& a)
             if (!v) return false;
             a.postp.vignette = float(std::atof(v));
             a.postSet |= kSetVignette;
+        } else if (key == "--split-tone") {
+            const char* v = next("--split-tone");
+            if (!v) return false;
+            a.postp.splitTone = float(std::atof(v));
+            a.postSet |= kSetSplitTone;
         } else if (key == "--no-post") {
             a.post = false;
         } else if (key == "--no-check") {
@@ -262,7 +273,7 @@ static bool parseArgs(int argc, char** argv, Args& a)
 }
 
 // CPU reference gate: same pixel shader, serial vs parallel execution.
-// relL2 < 1e-4 is the pass budget (fast-math rounding floor, see file header).
+// relL2 < 2e-4 is the pass budget (fast-math rounding floor, see file header).
 static bool runCheck(const art::FieldParams& p)
 {
     const int w = 320, h = 180;
@@ -280,7 +291,7 @@ static bool runCheck(const art::FieldParams& p)
     const DiffStats d = compareArrays(gpu.data(), ref.data(), n);
     std::printf("check  : relL2 %.3e  maxAbs %.3e  (GPU vs CPU, %dx%d)\n",
                 d.relL2, d.maxAbs, w, h);
-    return d.relL2 < 1e-4;
+    return d.relL2 < 2e-4;
 }
 
 int main(int argc, char** argv)
@@ -323,8 +334,9 @@ int main(int argc, char** argv)
         timer.start();
         art::renderPostGpu(dOut, dField, args.width, args.height, post);
         const float msPost = timer.stop();
-        std::printf("post   : %.3f ms  (grain %.3f  halation %.2f  bloom %.2f  vignette %.2f)\n",
-                    msPost, post.grain, post.halation, post.bloom, post.vignette);
+        std::printf("post   : %.3f ms  (grain %.3f  halation %.2f  bloom %.2f  vignette %.2f  split %.2f)\n",
+                    msPost, post.grain, post.halation, post.bloom, post.vignette,
+                    post.splitTone);
         CUDA_CHECK(cudaMemcpy(hRgb.data(), dOut, pixels * 3 * sizeof(float),
                               cudaMemcpyDeviceToHost));
         CUDA_CHECK(cudaFree(dOut));

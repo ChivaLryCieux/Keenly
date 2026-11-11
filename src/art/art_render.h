@@ -20,6 +20,7 @@ struct PostParams
     float halation = 0.35f;   // reddish glow strength around highlights
     float bloom = 0.12f;      // neutral glow strength
     float vignette = 0.35f;   // corner darkening amount
+    float splitTone = 0.35f;  // teal shadows / warm highlights grade strength
 };
 
 // Render the field into an RGB float buffer on the device (row-major, 3
