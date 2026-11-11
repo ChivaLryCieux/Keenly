@@ -86,10 +86,29 @@ CLI 显式参数优先于 preset 默认值（`keenly.cu` 用 set 位图跟踪）
 | `facet` | Worley 细胞 + 每面受光 + 亮缝 | **凛冽几何**：晶体切面 / 碎裂 |
 | `prism` | 30° 旋转坐标上的三角波折叠 | **凛冽几何**：雪佛龙 / 菱格栅（直方图双峰） |
 | `liquid` | warpField 宽场 + powi-16 高光 + 加性 glint | **光照质感**：液态金属 / 油膜 |
+| `turing` | Gray-Scott 反应扩散（图灵斑） | **有机斑纹**：珊瑚 / 迷宫 / 斑点 |
 
 全部是 `(x, y, seed)` 纯函数、纯多项式 + IEEE sqrt 运算（Worley 距离、
 整数幂高光）——CPU/GPU 逐位一致由此成立。高光的性格按模式分：
 liquid 宽高光 + 白 glint、facet 硬闪、frost 微闪点。
+
+### turing 模式：迭代模拟如何保住位级门禁
+
+反应扩散不是 `(x, y)` 闭式函数，是**网格迭代状态**。确定性靠构造保证：
+
+- **Jacobi 更新**（ping-pong 双缓冲）：每格只读上一帧缓冲，更新顺序不影响
+  结果——如果用原地 Gauss-Seidel，线程调度会改变结果，GPU/CPU 就不可能全等；
+- **同一份更新数学**（`turing.cuh` 的 `turingUpdate` 内联）：GPU kernel 和
+  CPU 参考都调它，`--fmad=false` 严格 IEEE，实测 maxAbs = 0；
+- **环绕边界**（wrapi）：网格可平铺，无边缘伪影；
+- 初始化是 `(x, y, res, seed)` 的纯函数（hash 种子斑点），换 seed 换构图。
+
+模拟每图跑一次（GPU ~1.5s @512²×6000 步），之后像素着色器用五次方平滑
+双线性（quintic bilinear）采样 B 网格——C2 连续，浮雕着色下无双线性折痕。
+
+Gray-Scott 参数 `--rd-f`（feed）/ `--rd-k`（kill）决定形态（Pearson 形态图）：
+(0.0545, 0.062) 珊瑚生长、(0.0367, 0.0649) 分裂斑点、(0.022, 0.051) 蠕虫、
+(0.038, 0.061) 空洞迷宫、(0.026, 0.051) 条纹、(0.034, 0.056) 混沌。
 
 ## 九宫格阵容（runGrid cells 表）
 
