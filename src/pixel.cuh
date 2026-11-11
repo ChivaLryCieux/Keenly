@@ -17,6 +17,7 @@
 // are stage 2 (post) and encoding happens at PNG write time.
 
 #include "noise.cuh"
+#include "turing.cuh"
 
 namespace keenly
 {
@@ -48,7 +49,8 @@ enum FieldMode
     kFieldFrost = 3,  // fine Worley facets + sparkle: crystalline frosted glass
     kFieldFacet = 4,  // hard-edged Worley crystal: flat facets, bright seams
     kFieldPrism = 5,  // folded triangle lattice: austere chevron / diamond grid
-    kFieldLiquid = 6  // glossy metal: flowing warp field + specular shading
+    kFieldLiquid = 6, // glossy metal: flowing warp field + specular shading
+    kFieldTuring = 7  // Gray-Scott reaction-diffusion: Turing spots / labyrinths
 };
 
 struct FieldParams
@@ -65,6 +67,16 @@ struct FieldParams
     float bands = 12.0f;     // contour frequency for kFieldBands
     float macroAmt = 1.0f;   // layered composition strength (0 = flat v1 look)
     Palette pal;             // color ramp (perceptual stops)
+
+    // ---- Gray-Scott (kFieldTuring) -----------------------------------------
+    // The reaction-diffusion grid is simulated once per image (GPU and CPU
+    // paths each run their own sim from the same pure init/update code), then
+    // fieldValue samples `turingTex` - a res*res grid of the B channel.
+    float rdF = 0.0545f;     // feed rate
+    float rdK = 0.062f;      // kill rate
+    int rdRes = 256;         // simulation grid (square, tileable)
+    int rdIters = 3000;      // Jacobi steps
+    const float* turingTex = nullptr;  // sim result, device or host pointer
 };
 
 __host__ __device__ inline void paletteLookup(const Palette& pal, float t, float* rgb)
@@ -169,6 +181,14 @@ __host__ __device__ inline float fieldValue(const FieldParams& p, float u, float
             // the palette reaches its extremes, and the shading stage turns
             // specular (powi 16) with a broad glossy highlight.
             return warpField(px, py, p) * 1.30f;
+        }
+        case kFieldTuring: {
+            // Gray-Scott pattern: the simulated B grid, sampled tileably.
+            // Pattern scale is independent of output size: px already carries
+            // the view factor (px = u * view), so one sim grid spans exactly
+            // one image height after the rdRes / view rescale.
+            const float sc = float(p.rdRes) / p.view;
+            return sampleTuring(p.turingTex, p.rdRes, px * sc, py * sc);
         }
         default:
             return warpField(px, py, p);
