@@ -41,6 +41,15 @@ struct Args
     keenly::FieldParams field;
     keenly::PostParams postp;
     std::string out = "out/field.png";
+
+    // ---- icon mode ---------------------------------------------------------
+    bool iconMode = false;     // render one RGBA skill icon instead of a still
+    std::string family = "blue";  // blue|red|gold|purple
+    std::string glyph = "sword";  // glyph name, see sdf.cuh glyphName()
+    int tier = 2;              // frame tier 1..4
+    int maskRound = 1;         // 1 = rounded rect, 0 = sharp rect
+    float radius = 0.16f;      // corner radius, fraction of the min side
+    std::string iconsDemo;     // non-empty: render the icon demo batch to DIR
 };
 
 // ---- presets ---------------------------------------------------------------
@@ -162,8 +171,41 @@ static void applyPreset(keenly::FieldParams& f, keenly::PostParams& p, const std
         if (!(set & kSetHalation))   p.halation = 0.25f;
         if (!(set & kSetVignette))   p.vignette = 0.33f;
         if (!(set & kSetSplitTone))  p.splitTone = 0.30f;
+    } else if (name == "gold") {
+        // dark bronze -> ochre -> bright gold -> ivory (holy / light / royal)
+        f.pal.count = 5;
+        f.pal.pos[0] = 0.00f; f.pal.pos[1] = 0.28f; f.pal.pos[2] = 0.55f;
+        f.pal.pos[3] = 0.78f; f.pal.pos[4] = 1.00f;
+        f.pal.rgb[0][0] = 0.060f; f.pal.rgb[0][1] = 0.040f; f.pal.rgb[0][2] = 0.010f;
+        f.pal.rgb[1][0] = 0.300f; f.pal.rgb[1][1] = 0.180f; f.pal.rgb[1][2] = 0.050f;
+        f.pal.rgb[2][0] = 0.680f; f.pal.rgb[2][1] = 0.460f; f.pal.rgb[2][2] = 0.120f;
+        f.pal.rgb[3][0] = 0.950f; f.pal.rgb[3][1] = 0.720f; f.pal.rgb[3][2] = 0.280f;
+        f.pal.rgb[4][0] = 1.000f; f.pal.rgb[4][1] = 0.950f; f.pal.rgb[4][2] = 0.800f;
+        if (!(set & kSetContrast))   f.contrast = 1.45f;
+        if (!(set & kSetGrain))      p.grain = 0.04f;
+        if (!(set & kSetGrainScale)) p.grainScale = 2.2f;
+        if (!(set & kSetHalation))   p.halation = 0.42f;
+        if (!(set & kSetBloom))      p.bloom = 0.15f;
+        if (!(set & kSetVignette))   p.vignette = 0.34f;
+        if (!(set & kSetSplitTone))  p.splitTone = 0.18f;
+    } else if (name == "violet") {
+        // dark violet-black -> violet -> magenta -> pale lilac (shadow / void)
+        f.pal.count = 5;
+        f.pal.pos[0] = 0.00f; f.pal.pos[1] = 0.25f; f.pal.pos[2] = 0.52f;
+        f.pal.pos[3] = 0.76f; f.pal.pos[4] = 1.00f;
+        f.pal.rgb[0][0] = 0.050f; f.pal.rgb[0][1] = 0.020f; f.pal.rgb[0][2] = 0.100f;
+        f.pal.rgb[1][0] = 0.220f; f.pal.rgb[1][1] = 0.080f; f.pal.rgb[1][2] = 0.380f;
+        f.pal.rgb[2][0] = 0.500f; f.pal.rgb[2][1] = 0.180f; f.pal.rgb[2][2] = 0.620f;
+        f.pal.rgb[3][0] = 0.820f; f.pal.rgb[3][1] = 0.380f; f.pal.rgb[3][2] = 0.880f;
+        f.pal.rgb[4][0] = 0.970f; f.pal.rgb[4][1] = 0.880f; f.pal.rgb[4][2] = 1.000f;
+        if (!(set & kSetGrain))      p.grain = 0.038f;
+        if (!(set & kSetGrainScale)) p.grainScale = 1.6f;
+        if (!(set & kSetHalation))   p.halation = 0.26f;
+        if (!(set & kSetBloom))      p.bloom = 0.12f;
+        if (!(set & kSetVignette))   p.vignette = 0.30f;
+        if (!(set & kSetSplitTone))  p.splitTone = 0.16f;
     } else {
-        std::fprintf(stderr, "unknown preset: %s (use mono|cinema|dusk|ember|ice|moss)\n",
+        std::fprintf(stderr, "unknown preset: %s (use mono|cinema|dusk|ember|ice|moss|gold|violet)\n",
                      name.c_str());
         std::exit(1);
     }
@@ -174,6 +216,72 @@ static inline float srgbEncode(float v)
 {
     v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
     return v <= 0.0031308f ? 12.92f * v : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
+}
+
+// ---- icon families ---------------------------------------------------------
+// Four game-skill color families. Each family = background field preset +
+// linear accent colors for the glyph/frame (see icon.cuh for how they are
+// used). Accents are LINEAR radiance values: ACES compresses highlights, so
+// stroke / glow intentionally exceed 1.0 for the "lit" game-icon look.
+
+static void applyIconFamily(keenly::IconParams& ip, const std::string& name)
+{
+    using namespace keenly;
+    PostParams post;   // icon post: fine grain, subtle vignette, no halation
+    post.grain = 0.030f;
+    post.grainScale = 1.3f;
+    post.halation = 0.0f;
+    post.bloom = 0.0f;
+    post.vignette = 0.20f;
+    post.splitTone = 0.15f;
+    post.saturation = 1.12f;
+
+    if (name == "blue") {
+        applyPreset(ip.field, post, "ice", 0u);
+        ip.field.mode = kFieldFrost;
+        ip.field.view = 2.8f;
+        ip.field.warp = 1.1f;
+        ip.col.fill[0] = 0.10f;  ip.col.fill[1] = 0.30f;  ip.col.fill[2] = 0.75f;
+        ip.col.hi[0] = 0.75f;    ip.col.hi[1] = 0.92f;    ip.col.hi[2] = 1.05f;
+        ip.col.stroke[0] = 1.35f; ip.col.stroke[1] = 1.50f; ip.col.stroke[2] = 1.62f;
+        ip.col.glow[0] = 0.25f;  ip.col.glow[1] = 0.65f;  ip.col.glow[2] = 1.15f;
+        ip.col.shadow[0] = 0.02f; ip.col.shadow[1] = 0.07f; ip.col.shadow[2] = 0.24f;
+    } else if (name == "red") {
+        applyPreset(ip.field, post, "ember", 0u);
+        ip.field.mode = kFieldLiquid;
+        ip.field.view = 2.6f;
+        ip.field.warp = 1.25f;
+        ip.col.fill[0] = 0.88f;  ip.col.fill[1] = 0.14f;  ip.col.fill[2] = 0.07f;
+        ip.col.hi[0] = 1.15f;    ip.col.hi[1] = 0.55f;    ip.col.hi[2] = 0.32f;
+        ip.col.stroke[0] = 1.62f; ip.col.stroke[1] = 1.34f; ip.col.stroke[2] = 1.02f;
+        ip.col.glow[0] = 1.15f;  ip.col.glow[1] = 0.30f;  ip.col.glow[2] = 0.08f;
+        ip.col.shadow[0] = 0.24f; ip.col.shadow[1] = 0.02f; ip.col.shadow[2] = 0.01f;
+    } else if (name == "gold") {
+        applyPreset(ip.field, post, "gold", 0u);
+        ip.field.mode = kFieldFacet;
+        ip.field.view = 2.7f;
+        ip.field.warp = 1.15f;
+        ip.col.fill[0] = 0.92f;  ip.col.fill[1] = 0.62f;  ip.col.fill[2] = 0.12f;
+        ip.col.hi[0] = 1.32f;    ip.col.hi[1] = 1.10f;    ip.col.hi[2] = 0.62f;
+        ip.col.stroke[0] = 1.55f; ip.col.stroke[1] = 1.46f; ip.col.stroke[2] = 1.14f;
+        ip.col.glow[0] = 1.20f;  ip.col.glow[1] = 0.85f;  ip.col.glow[2] = 0.24f;
+        ip.col.shadow[0] = 0.26f; ip.col.shadow[1] = 0.13f; ip.col.shadow[2] = 0.02f;
+    } else if (name == "purple") {
+        applyPreset(ip.field, post, "violet", 0u);
+        ip.field.mode = kFieldWarp;
+        ip.field.view = 2.9f;
+        ip.field.warp = 1.3f;
+        ip.col.fill[0] = 0.52f;  ip.col.fill[1] = 0.16f;  ip.col.fill[2] = 0.82f;
+        ip.col.hi[0] = 0.98f;    ip.col.hi[1] = 0.74f;    ip.col.hi[2] = 1.18f;
+        ip.col.stroke[0] = 1.44f; ip.col.stroke[1] = 1.26f; ip.col.stroke[2] = 1.62f;
+        ip.col.glow[0] = 0.85f;  ip.col.glow[1] = 0.28f;  ip.col.glow[2] = 1.18f;
+        ip.col.shadow[0] = 0.10f; ip.col.shadow[1] = 0.02f; ip.col.shadow[2] = 0.24f;
+    } else {
+        std::fprintf(stderr, "unknown icon family: %s (use blue|red|gold|purple)\n",
+                     name.c_str());
+        std::exit(1);
+    }
+    ip.post = post;
 }
 
 // Triangular-PDF dither before quantization: kills 8-bit banding in smooth
@@ -215,6 +323,30 @@ static bool writeImage(const std::string& path, int w, int h, int depth,
     return keenly::writePng(path, w, h, 8, img.data());
 }
 
+// RGBA float buffer -> PNG (sRGB on color, straight quantize on alpha).
+// Alpha is a coverage mask, not a color: no dither there, so icon edges
+// stay clean after engine compositing.
+static bool writeImageRgba(const std::string& path, int w, int h,
+                           const std::vector<float>& linear)
+{
+    std::error_code ec;
+    std::filesystem::path outPath(path);
+    if (outPath.has_parent_path())
+        std::filesystem::create_directories(outPath.parent_path(), ec);
+
+    const size_t n = size_t(w) * size_t(h) * 4;
+    std::vector<uint8_t> img(n);
+    for (size_t i = 0; i < n; i += 4) {
+        img[i + 0] = uint8_t(srgbEncode(linear[i + 0]) * 255.0f + 0.5f);
+        img[i + 1] = uint8_t(srgbEncode(linear[i + 1]) * 255.0f + 0.5f);
+        img[i + 2] = uint8_t(srgbEncode(linear[i + 2]) * 255.0f + 0.5f);
+        float a = linear[i + 3];
+        a = a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
+        img[i + 3] = uint8_t(a * 255.0f + 0.5f);
+    }
+    return keenly::writePng(path, w, h, 8, img.data(), 4);
+}
+
 static void printUsage()
 {
     std::printf(
@@ -246,7 +378,16 @@ static void printUsage()
         "  --no-check     skip the CPU reference gate\n"
         "  --check-all    run the bit-exact gate on every generator, then exit\n"
         "  --grid   P     render a 3x3 style showcase grid to PNG path P\n"
-        "  --tile   N     showcase cell size in pixels (default 800)\n");
+        "  --tile   N     showcase cell size in pixels (default 800)\n"
+        "icon mode (RGBA skill icons):\n"
+        "  --icon         render one icon (family/glyph/tier/mask below)\n"
+        "  --family F     blue|red|gold|purple        (default blue)\n"
+        "  --glyph  G     sword|axe|bow|shield|flame|droplet|snow|bolt|sparkle\n"
+        "                 moon|sun|eye|heart|skull|cross|rune|crown|potion\n"
+        "  --tier   N     frame tier 1..4             (default 2)\n"
+        "  --mask   M     round|rect                   (default round)\n"
+        "  --radius F     corner radius, min-side fraction (default 0.16)\n"
+        "  --icons-demo P render the icon demo batch into directory P\n");
 }
 
 static bool parseArgs(int argc, char** argv, Args& a)
@@ -391,6 +532,42 @@ static bool parseArgs(int argc, char** argv, Args& a)
             a.check = false;
         } else if (key == "--check-all") {
             a.checkAll = true;
+        } else if (key == "--icon") {
+            a.iconMode = true;
+        } else if (key == "--family") {
+            const char* v = next("--family");
+            if (!v) return false;
+            a.family = v;
+            a.iconMode = true;
+        } else if (key == "--glyph") {
+            const char* v = next("--glyph");
+            if (!v) return false;
+            a.glyph = v;
+            a.iconMode = true;
+        } else if (key == "--tier") {
+            const char* v = next("--tier");
+            if (!v) return false;
+            a.tier = std::atoi(v);
+            a.iconMode = true;
+        } else if (key == "--mask") {
+            const char* v = next("--mask");
+            if (!v) return false;
+            if (std::strcmp(v, "round") == 0)      a.maskRound = 1;
+            else if (std::strcmp(v, "rect") == 0)  a.maskRound = 0;
+            else {
+                std::fprintf(stderr, "unknown mask: %s (use round|rect)\n", v);
+                return false;
+            }
+            a.iconMode = true;
+        } else if (key == "--radius") {
+            const char* v = next("--radius");
+            if (!v) return false;
+            a.radius = float(std::atof(v));
+            a.iconMode = true;
+        } else if (key == "--icons-demo") {
+            const char* v = next("--icons-demo");
+            if (!v) return false;
+            a.iconsDemo = v;
         } else {
             std::fprintf(stderr, "unknown option: %s\n", key.c_str());
             return false;
@@ -533,6 +710,224 @@ static int runGrid(const Args& args)
     return 0;
 }
 
+// ---- icon mode -------------------------------------------------------------
+// One RGBA skill icon = background field + SDF glyph + tier frame + rounded
+// rect mask, all as one pure-function kernel (icon.cuh). The batch demo
+// renders the whole family x glyph lineup plus contact sheets.
+
+static int glyphFromName(const std::string& name)
+{
+    for (int g = 0; g < keenly::kGlyphCount; ++g)
+        if (name == keenly::glyphName(g)) return g;
+    std::fprintf(stderr, "unknown glyph: %s\n", name.c_str());
+    return -1;
+}
+
+// Icon gate: same iconPixel on CPU and GPU, bit-exact like the field gate.
+static bool runIconCheck(const keenly::IconParams& p)
+{
+    const int w = 128, h = 128;
+    const size_t n = size_t(w) * size_t(h) * 4;
+    std::vector<float> ref(n), gpu(n);
+
+    keenly::renderIconCpu(ref.data(), w, h, p);
+
+    float* dBuf = nullptr;
+    CUDA_CHECK(cudaMalloc(&dBuf, n * sizeof(float)));
+    keenly::renderIconGpu(dBuf, w, h, p);
+    CUDA_CHECK(cudaMemcpy(gpu.data(), dBuf, n * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaFree(dBuf));
+
+    const DiffStats d = compareArrays(gpu.data(), ref.data(), n);
+    std::printf("check  : relL2 %.3e  maxAbs %.3e  (icon GPU vs CPU, expect 0)\n",
+                d.relL2, d.maxAbs);
+    return d.maxAbs == 0.0;
+}
+
+static bool renderOneIcon(const Args& args, const keenly::IconParams& p,
+                          int w, int h, const std::string& path)
+{
+    if (args.check && !runIconCheck(p)) {
+        std::fprintf(stderr, "ICON CHECK FAILED: GPU disagrees with the CPU reference\n");
+        return false;
+    }
+    const size_t n = size_t(w) * size_t(h) * 4;
+    std::vector<float> img(n);
+    float* dBuf = nullptr;
+    CUDA_CHECK(cudaMalloc(&dBuf, n * sizeof(float)));
+
+    GpuTimer timer;
+    timer.start();
+    keenly::renderIconGpu(dBuf, w, h, p);
+    const float ms = timer.stop();
+    CUDA_CHECK(cudaMemcpy(img.data(), dBuf, n * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaFree(dBuf));
+
+    if (!writeImageRgba(path, w, h, img)) {
+        std::fprintf(stderr, "failed to write %s\n", path.c_str());
+        return false;
+    }
+    std::printf("wrote  : %s  (%dx%d RGBA, %.2f ms)\n", path.c_str(), w, h, ms);
+    return true;
+}
+
+static int runIcon(const Args& args)
+{
+    const int glyph = glyphFromName(args.glyph);
+    if (glyph < 0) return 1;
+    if (args.tier < 1 || args.tier > 4) {
+        std::fprintf(stderr, "bad tier: %d (use 1..4)\n", args.tier);
+        return 1;
+    }
+
+    keenly::IconParams ip;
+    applyIconFamily(ip, args.family);
+    ip.glyph = glyph;
+    ip.tier = args.tier;
+    ip.roundedMask = args.maskRound;
+    ip.radius = args.radius;
+    ip.field.seed = 7u;
+    ip.post.seed = 7u;
+
+    std::printf("icon   : %s / %s / t%d / %s mask\n", args.family.c_str(),
+                keenly::glyphName(glyph), args.tier,
+                args.maskRound ? "round" : "rect");
+    return renderOneIcon(args, ip, args.width, args.height, args.out) ? 0 : 1;
+}
+
+// Demo batch: every family x every glyph at 128px + 64px, tier 2 rounded,
+// plus one contact sheet per family and a tier-variant sheet. This is the
+// "show me what this looks like" output; the manifest-driven production run
+// comes later (docs/icons_plan.md Phase 2).
+static int runIconsDemo(const Args& args)
+{
+    static const char* kFamilies[4] = {"blue", "red", "gold", "purple"};
+    static const int kTile = 128;
+    static const int kThumb = 64;
+    const std::string root = args.iconsDemo;
+    bool allOk = true;
+
+    for (int f = 0; f < 4; ++f) {
+        // Contact sheet: 6 x 3 glyphs at 128px on a dark backdrop.
+        const int cols = 6;
+        const int rows = (keenly::kGlyphCount + cols - 1) / cols;
+        const int gap = 16;
+        const int sw = cols * kTile + (cols + 1) * gap;
+        const int sh = rows * kTile + (rows + 1) * gap;
+        std::vector<float> sheet(size_t(sw) * size_t(sh) * 3, 0.030f);
+
+        for (int g = 0; g < keenly::kGlyphCount; ++g) {
+            keenly::IconParams ip;
+            applyIconFamily(ip, kFamilies[f]);
+            ip.glyph = g;
+            ip.tier = 2;
+            ip.roundedMask = 1;
+            ip.radius = 0.16f;
+            ip.field.seed = 7u + unsigned(g) * 13u;
+            ip.post.seed = ip.field.seed;
+
+            // full-size RGBA icon (runs the gate once per icon)
+            char name[128];
+            std::snprintf(name, sizeof(name), "%s/%s_%s.png", kFamilies[f],
+                          kFamilies[f], keenly::glyphName(g));
+            if (!renderOneIcon(args, ip, kTile, kTile, root + "/" + name))
+                allOk = false;
+
+            // 64px thumbnail (same params, no gate re-run)
+            std::snprintf(name, sizeof(name), "%s/thumbs/%s_%s_64.png", kFamilies[f],
+                          kFamilies[f], keenly::glyphName(g));
+            {
+                const size_t n = size_t(kThumb) * size_t(kThumb) * 4;
+                std::vector<float> img(n);
+                float* dBuf = nullptr;
+                CUDA_CHECK(cudaMalloc(&dBuf, n * sizeof(float)));
+                keenly::renderIconGpu(dBuf, kThumb, kThumb, ip);
+                CUDA_CHECK(cudaMemcpy(img.data(), dBuf, n * sizeof(float),
+                                      cudaMemcpyDeviceToHost));
+                CUDA_CHECK(cudaFree(dBuf));
+                if (!writeImageRgba(root + "/" + name, kThumb, kThumb, img)) {
+                    std::fprintf(stderr, "failed to write %s\n", name);
+                    allOk = false;
+                }
+            }
+
+            // paste the 128px icon onto the contact sheet (alpha over dark)
+            const int cx = gap + (g % cols) * (kTile + gap);
+            const int cy = gap + (g / cols) * (kTile + gap);
+            const size_t n = size_t(kTile) * size_t(kTile) * 4;
+            std::vector<float> cell(n);
+            float* dBuf = nullptr;
+            CUDA_CHECK(cudaMalloc(&dBuf, n * sizeof(float)));
+            keenly::renderIconGpu(dBuf, kTile, kTile, ip);
+            CUDA_CHECK(cudaMemcpy(cell.data(), dBuf, n * sizeof(float),
+                                  cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaFree(dBuf));
+            for (int y = 0; y < kTile; ++y) {
+                for (int x = 0; x < kTile; ++x) {
+                    const size_t ci = (size_t(y) * kTile + x) * 4;
+                    const float a = cell[ci + 3];
+                    float* s = &sheet[(size_t(cy + y) * sw + cx + x) * 3];
+                    for (int c = 0; c < 3; ++c)
+                        s[c] = cell[ci + c] * a + 0.030f * (1.0f - a);
+                }
+            }
+        }
+
+        char sheetName[128];
+        std::snprintf(sheetName, sizeof(sheetName), "%s/sheet_%s.png",
+                      kFamilies[f], kFamilies[f]);
+        if (!writeImage(root + "/" + sheetName, sw, sh, 8, sheet)) {
+            std::fprintf(stderr, "failed to write %s\n", sheetName);
+            allOk = false;
+        } else {
+            std::printf("wrote  : %s/sheet_%s.png  (%dx%d)\n",
+                        kFamilies[f], kFamilies[f], sw, sh);
+        }
+    }
+
+    // Tier variant sheet: sword on gold, tiers 1..4 at 256px.
+    {
+        const int t = 256, gap = 16;
+        const int sw = 4 * t + 5 * gap;
+        std::vector<float> sheet(size_t(sw) * size_t(sw) * 3, 0.030f);
+        for (int tier = 1; tier <= 4; ++tier) {
+            keenly::IconParams ip;
+            applyIconFamily(ip, "gold");
+            ip.glyph = keenly::kGlyphSword;
+            ip.tier = tier;
+            ip.roundedMask = 1;
+            ip.radius = 0.16f;
+            const size_t n = size_t(t) * size_t(t) * 4;
+            std::vector<float> cell(n);
+            float* dBuf = nullptr;
+            CUDA_CHECK(cudaMalloc(&dBuf, n * sizeof(float)));
+            keenly::renderIconGpu(dBuf, t, t, ip);
+            CUDA_CHECK(cudaMemcpy(cell.data(), dBuf, n * sizeof(float),
+                                  cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaFree(dBuf));
+            const int cx = gap + (tier - 1) * (t + gap);
+            for (int y = 0; y < t; ++y) {
+                for (int x = 0; x < t; ++x) {
+                    const size_t ci = (size_t(y) * t + x) * 4;
+                    const float a = cell[ci + 3];
+                    float* s = &sheet[(size_t(gap + y) * sw + cx + x) * 3];
+                    for (int c = 0; c < 3; ++c)
+                        s[c] = cell[ci + c] * a + 0.030f * (1.0f - a);
+                }
+            }
+        }
+        if (!writeImage(root + "/sheet_tiers.png", sw, sw, 8, sheet)) {
+            std::fprintf(stderr, "failed to write sheet_tiers.png\n");
+            allOk = false;
+        } else {
+            std::printf("wrote  : %s/sheet_tiers.png  (%dx%d)\n",
+                        root.c_str(), sw, sw);
+        }
+    }
+
+    return allOk ? 0 : 1;
+}
+
 int main(int argc, char** argv)
 {
     Args args;
@@ -547,6 +942,12 @@ int main(int argc, char** argv)
 
     if (args.checkAll)
         return runCheckAll();
+
+    if (!args.iconsDemo.empty())
+        return runIconsDemo(args);
+
+    if (args.iconMode)
+        return runIcon(args);
 
     if (!args.grid.empty())
         return runGrid(args);
