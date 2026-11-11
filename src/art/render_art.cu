@@ -4,13 +4,12 @@
 // ASCII-ONLY FILE ON PURPOSE (see src/common/cuda_utils.h for the reason).
 //
 // Every render runs the verify gate first (unless --no-check): the same
-// pixel shader executes on CPU and GPU and the two buffers must agree to
-// relL2 < 2e-4, the same "prove it on the CPU" philosophy as bench_matmul.
-// The budget is not zero: nvcc --use_fast_math plus FMA contraction leave a
-// measured rounding floor of ~6.5e-5 over this pipeline (it grows with the
-// length of the float-op chain: 5 field evaluations + per-octave rotation).
-// Real plumbing bugs land at 1e-2 and above, so 2e-4 still has ~50x of
-// detection headroom.
+// pixel shader executes on CPU and GPU and the two buffers must be
+// BIT-IDENTICAL (maxAbs == 0). The art target compiles strict IEEE math
+// (--fmad=false, no fast-math) precisely so this holds: measured relL2 = 0
+// for every field mode. If the gate ever fires, a non-IEEE operation
+// (transcendental, fast-math division, FMA contraction) has slipped into
+// art_noise/art_pixel and reproducibility is gone.
 
 #include <cmath>
 #include <cstdio>
@@ -53,7 +52,7 @@ enum SetBits
     kSetContrast = 1u << 3,  kSetRelief = 1u << 4,    kSetSeed = 1u << 5,
     kSetExposure = 1u << 6,  kSetGrain = 1u << 7,     kSetGrainScale = 1u << 8,
     kSetHalation = 1u << 9,  kSetBloom = 1u << 10,    kSetVignette = 1u << 11,
-    kSetSplitTone = 1u << 12
+    kSetSplitTone = 1u << 12, kSetBands = 1u << 13
 };
 
 static void applyPreset(art::FieldParams& f, art::PostParams& p, const std::string& name,
@@ -106,8 +105,57 @@ static void applyPreset(art::FieldParams& f, art::PostParams& p, const std::stri
         if (!(set & kSetBloom))      p.bloom = 0.10f;
         if (!(set & kSetVignette))   p.vignette = 0.28f;
         if (!(set & kSetSplitTone))  p.splitTone = 0.25f;
+    } else if (name == "ember") {
+        // black-red -> orange -> gold (fire / molten metal)
+        f.pal.count = 5;
+        f.pal.pos[0] = 0.00f; f.pal.pos[1] = 0.30f; f.pal.pos[2] = 0.58f;
+        f.pal.pos[3] = 0.80f; f.pal.pos[4] = 1.00f;
+        f.pal.rgb[0][0] = 0.03f; f.pal.rgb[0][1] = 0.01f; f.pal.rgb[0][2] = 0.01f;
+        f.pal.rgb[1][0] = 0.35f; f.pal.rgb[1][1] = 0.06f; f.pal.rgb[1][2] = 0.02f;
+        f.pal.rgb[2][0] = 0.85f; f.pal.rgb[2][1] = 0.30f; f.pal.rgb[2][2] = 0.06f;
+        f.pal.rgb[3][0] = 1.00f; f.pal.rgb[3][1] = 0.65f; f.pal.rgb[3][2] = 0.15f;
+        f.pal.rgb[4][0] = 1.00f; f.pal.rgb[4][1] = 0.95f; f.pal.rgb[4][2] = 0.75f;
+        if (!(set & kSetContrast))   f.contrast = 1.5f;
+        if (!(set & kSetGrain))      p.grain = 0.05f;
+        if (!(set & kSetGrainScale)) p.grainScale = 2.6f;
+        if (!(set & kSetHalation))   p.halation = 0.50f;
+        if (!(set & kSetBloom))      p.bloom = 0.18f;
+        if (!(set & kSetVignette))   p.vignette = 0.40f;
+        if (!(set & kSetSplitTone))  p.splitTone = 0.15f;
+    } else if (name == "ice") {
+        // deep blue-black -> steel -> pale cyan -> white (glacier / glass)
+        f.pal.count = 5;
+        f.pal.pos[0] = 0.00f; f.pal.pos[1] = 0.32f; f.pal.pos[2] = 0.62f;
+        f.pal.pos[3] = 0.85f; f.pal.pos[4] = 1.00f;
+        f.pal.rgb[0][0] = 0.02f; f.pal.rgb[0][1] = 0.05f; f.pal.rgb[0][2] = 0.10f;
+        f.pal.rgb[1][0] = 0.10f; f.pal.rgb[1][1] = 0.28f; f.pal.rgb[1][2] = 0.45f;
+        f.pal.rgb[2][0] = 0.45f; f.pal.rgb[2][1] = 0.75f; f.pal.rgb[2][2] = 0.85f;
+        f.pal.rgb[3][0] = 0.85f; f.pal.rgb[3][1] = 0.95f; f.pal.rgb[3][2] = 0.98f;
+        f.pal.rgb[4][0] = 1.00f; f.pal.rgb[4][1] = 1.00f; f.pal.rgb[4][2] = 1.00f;
+        if (!(set & kSetGrain))      p.grain = 0.04f;
+        if (!(set & kSetGrainScale)) p.grainScale = 1.8f;
+        if (!(set & kSetHalation))   p.halation = 0.15f;
+        if (!(set & kSetBloom))      p.bloom = 0.15f;
+        if (!(set & kSetVignette))   p.vignette = 0.30f;
+        if (!(set & kSetSplitTone))  p.splitTone = 0.20f;
+    } else if (name == "moss") {
+        // dark green-brown -> moss -> sage -> warm sand (forest floor)
+        f.pal.count = 5;
+        f.pal.pos[0] = 0.00f; f.pal.pos[1] = 0.30f; f.pal.pos[2] = 0.60f;
+        f.pal.pos[3] = 0.82f; f.pal.pos[4] = 1.00f;
+        f.pal.rgb[0][0] = 0.05f; f.pal.rgb[0][1] = 0.06f; f.pal.rgb[0][2] = 0.03f;
+        f.pal.rgb[1][0] = 0.15f; f.pal.rgb[1][1] = 0.25f; f.pal.rgb[1][2] = 0.10f;
+        f.pal.rgb[2][0] = 0.42f; f.pal.rgb[2][1] = 0.55f; f.pal.rgb[2][2] = 0.25f;
+        f.pal.rgb[3][0] = 0.75f; f.pal.rgb[3][1] = 0.72f; f.pal.rgb[3][2] = 0.45f;
+        f.pal.rgb[4][0] = 0.95f; f.pal.rgb[4][1] = 0.92f; f.pal.rgb[4][2] = 0.80f;
+        if (!(set & kSetGrain))      p.grain = 0.045f;
+        if (!(set & kSetGrainScale)) p.grainScale = 2.4f;
+        if (!(set & kSetHalation))   p.halation = 0.25f;
+        if (!(set & kSetVignette))   p.vignette = 0.33f;
+        if (!(set & kSetSplitTone))  p.splitTone = 0.30f;
     } else {
-        std::fprintf(stderr, "unknown preset: %s (use mono|cinema|dusk)\n", name.c_str());
+        std::fprintf(stderr, "unknown preset: %s (use mono|cinema|dusk|ember|ice|moss)\n",
+                     name.c_str());
         std::exit(1);
     }
 }
@@ -139,7 +187,9 @@ static void printUsage()
         "  --height N     image height in pixels  (default 1072)\n"
         "  --depth  D     PNG bits per channel: 8 or 16 (default 16)\n"
         "  --out    P     output PNG path         (default out/field.png)\n"
-        "  --preset P     mono | cinema | dusk    (default cinema)\n"
+        "  --preset P     mono|cinema|dusk|ember|ice|moss (default cinema)\n"
+        "  --mode   M     warp|ridge|bands|frost  field generator (default warp)\n"
+        "  --bands  N     contour frequency for bands mode (default 12)\n"
         "  --seed   S     deterministic seed      (default 7)\n"
         "  --view   F     noise extent across height (default 3.2)\n"
         "  --octaves N    fBm octaves             (default 5)\n"
@@ -191,6 +241,22 @@ static bool parseArgs(int argc, char** argv, Args& a)
             const char* v = next("--preset");
             if (!v) return false;
             a.preset = v;
+        } else if (key == "--mode") {
+            const char* v = next("--mode");
+            if (!v) return false;
+            if (std::strcmp(v, "warp") == 0)       a.field.mode = 0;
+            else if (std::strcmp(v, "ridge") == 0) a.field.mode = 1;
+            else if (std::strcmp(v, "bands") == 0) a.field.mode = 2;
+            else if (std::strcmp(v, "frost") == 0) a.field.mode = 3;
+            else {
+                std::fprintf(stderr, "unknown mode: %s (use warp|ridge|bands|frost)\n", v);
+                return false;
+            }
+        } else if (key == "--bands") {
+            const char* v = next("--bands");
+            if (!v) return false;
+            a.field.bands = float(std::atof(v));
+            a.postSet |= kSetBands;
         } else if (key == "--seed") {
             const char* v = next("--seed");
             if (!v) return false;
@@ -273,7 +339,8 @@ static bool parseArgs(int argc, char** argv, Args& a)
 }
 
 // CPU reference gate: same pixel shader, serial vs parallel execution.
-// relL2 < 2e-4 is the pass budget (fast-math rounding floor, see file header).
+// Bit-exact pass condition (maxAbs == 0), see file header for why this is
+// achievable and what breaking it means.
 static bool runCheck(const art::FieldParams& p)
 {
     const int w = 320, h = 180;
@@ -289,9 +356,9 @@ static bool runCheck(const art::FieldParams& p)
     CUDA_CHECK(cudaFree(dBuf));
 
     const DiffStats d = compareArrays(gpu.data(), ref.data(), n);
-    std::printf("check  : relL2 %.3e  maxAbs %.3e  (GPU vs CPU, %dx%d)\n",
+    std::printf("check  : relL2 %.3e  maxAbs %.3e  (GPU vs CPU, %dx%d, expect 0)\n",
                 d.relL2, d.maxAbs, w, h);
-    return d.relL2 < 2e-4;
+    return d.maxAbs == 0.0;
 }
 
 int main(int argc, char** argv)
@@ -306,9 +373,9 @@ int main(int argc, char** argv)
     CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
     applyPreset(args.field, args.postp, args.preset, args.postSet);
     std::printf("device : %s\n", prop.name);
-    std::printf("render : %dx%d  preset %s  seed %u  view %.2f  warp %.2f  octaves %d\n",
-                args.width, args.height, args.preset.c_str(), args.field.seed,
-                args.field.view, args.field.warp, args.field.octaves);
+    std::printf("render : %dx%d  preset %s  mode %d  seed %u  view %.2f  warp %.2f  octaves %d\n",
+                args.width, args.height, args.preset.c_str(), args.field.mode,
+                args.field.seed, args.field.view, args.field.warp, args.field.octaves);
 
     if (args.check && !runCheck(args.field)) {
         std::fprintf(stderr, "CHECK FAILED: GPU disagrees with the CPU reference\n");

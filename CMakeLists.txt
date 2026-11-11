@@ -14,7 +14,10 @@ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
 endif()
 
 # -lineinfo lets Nsight Compute correlate SASS back to source lines.
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 --use_fast_math -lineinfo --expt-relaxed-constexpr")
+# --use_fast_math is applied per target (matmul/conv targets only): the art
+# target compiles strict IEEE math so its CPU reference gate can demand
+# bit-exact GPU output. See src/art/CMakeLists.txt.
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 -lineinfo --expt-relaxed-constexpr")
 
 find_package(CUDAToolkit REQUIRED)
 

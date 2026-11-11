@@ -37,6 +37,16 @@ struct Palette
     };
 };
 
+// Field generators. Each is a pure function of (u, v, x, y, params), so any
+// of them can render at any size, tiled or whole.
+enum FieldMode
+{
+    kFieldWarp = 0,  // two-level domain-warped fBm: flowing organic smoke
+    kFieldRidge = 1, // warped ridged fBm: marble veins / rock strata
+    kFieldBands = 2, // triangle-wave contours of the warped field: flow lines
+    kFieldFrost = 3  // high-frequency fBm + per-pixel speckle: frosted matte
+};
+
 struct FieldParams
 {
     unsigned seed = 7u;
@@ -47,6 +57,8 @@ struct FieldParams
     float warp = 1.2f;       // domain warp strength
     float contrast = 1.4f;   // field shaping before the palette
     float relief = 2.5f;     // height-to-normal strength for the shading
+    int mode = kFieldWarp;   // which field generator
+    float bands = 12.0f;     // contour frequency for kFieldBands
     Palette pal;             // color ramp (perceptual stops)
 };
 
@@ -87,6 +99,47 @@ __host__ __device__ inline float warpField(float x, float y, const FieldParams& 
     return fbm2(x + w4 * rx, y + w4 * ry, s + 503u, oc, lac, gn);
 }
 
+// Raw field value in ~[-1, 1] for one generator, coordinates (u, v) in image
+// units (height = 1). (x, y) only feeds kFieldFrost's per-pixel speckle -
+// and since the speckle is the same in the gradient samples, it cancels out
+// of the relief shading by construction.
+__host__ __device__ inline float fieldValue(const FieldParams& p, float u, float v, int x, int y)
+{
+    const float px = u * p.view;
+    const float py = v * p.view;
+    const unsigned s = p.seed;
+    const int oc = p.octaves;
+    const float lac = p.lacunarity;
+    const float gn = p.gain;
+
+    switch (p.mode) {
+        case kFieldRidge: {
+            // ridged fBm sampled through a gentle warp: marble veins
+            const float qx = fbm2(px, py, s + 211u, oc, lac, gn);
+            const float qy = fbm2(px + 5.2f, py + 1.3f, s + 307u, oc, lac, gn);
+            return fbm2Ridged(px + p.warp * 2.0f * qx, py + p.warp * 2.0f * qy,
+                              s + 401u, oc, lac, gn);
+        }
+        case kFieldBands: {
+            // triangle-wave contours of the warped field: flow lines / wood
+            // grain / topographic bands. Polynomial only (frac + folds), so
+            // CPU/GPU still agree bit-for-bit.
+            const float f = warpField(px, py, p) * p.bands;
+            const float fr = f - floorf(f);            // frac, exact
+            const float tri = fr < 0.5f ? 2.0f * fr : 2.0f * (1.0f - fr);
+            return 2.0f * sstep(0.10f, 0.90f, tri) - 1.0f;
+        }
+        case kFieldFrost: {
+            // high-frequency fBm + per-pixel speckle: sandblasted matte
+            const float f = fbm2(px * 2.5f, py * 2.5f, s + 59u, oc, lac, gn);
+            const float sp = hash01(x, y, s + 3433u) * 2.0f - 1.0f;
+            return f * 0.85f + sp * 0.30f;
+        }
+        default:
+            return warpField(px, py, p);
+    }
+}
+
 // One pixel, linear RGB. Field value drives the palette; finite-difference
 // gradients of the same field at TWO scales drive the fake normal (light
 // fixed at upper-left): a coarse slope models the big forms, a fine slope
@@ -100,11 +153,11 @@ __host__ __device__ inline void fieldPixel(const FieldParams& p, int x, int y, i
     const float step = 1.2f / float(h);   // fine relief over ~1 pixel
     const float cstep = 3.6f / float(h);  // coarse relief over ~3 pixels
 
-    const float t   = warpField(u * p.view, v * p.view, p);
-    const float tx  = warpField((u + step) * p.view, v * p.view, p);
-    const float ty  = warpField(u * p.view, (v + step) * p.view, p);
-    const float tcx = warpField((u + cstep) * p.view, v * p.view, p);
-    const float tcy = warpField(u * p.view, (v + cstep) * p.view, p);
+    const float t   = fieldValue(p, u, v, x, y);
+    const float tx  = fieldValue(p, u + step, v, x, y);
+    const float ty  = fieldValue(p, u, v + step, x, y);
+    const float tcx = fieldValue(p, u + cstep, v, x, y);
+    const float tcy = fieldValue(p, u, v + cstep, x, y);
 
     float tc = 0.5f + 0.5f * t * p.contrast;
     tc = tc < 0.0f ? 0.0f : (tc > 1.0f ? 1.0f : tc);
