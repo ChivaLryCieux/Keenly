@@ -21,16 +21,17 @@
 namespace art
 {
 
-// Color ramp: up to 5 stops, strictly increasing positions. Stops live in
+// Color ramp: up to 6 stops, strictly increasing positions. Stops live in
 // perceptual (sRGB-like) space - easier to author - and paletteLookup()
 // linearizes with gamma 2.0 (a single multiply: exact on CPU and GPU).
 struct Palette
 {
     int count = 2;
-    float pos[5] = {0.0f, 1.0f, 0.0f, 0.0f, 0.0f};
-    float rgb[5][3] = {
+    float pos[6] = {0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    float rgb[6][3] = {
         {0.0f, 0.0f, 0.0f},
         {1.0f, 1.0f, 1.0f},
+        {0.0f, 0.0f, 0.0f},
         {0.0f, 0.0f, 0.0f},
         {0.0f, 0.0f, 0.0f},
         {0.0f, 0.0f, 0.0f}
@@ -62,6 +63,7 @@ struct FieldParams
     float relief = 2.5f;     // height-to-normal strength for the shading
     int mode = kFieldWarp;   // which field generator
     float bands = 12.0f;     // contour frequency for kFieldBands
+    float macroAmt = 1.0f;   // layered composition strength (0 = flat v1 look)
     Palette pal;             // color ramp (perceptual stops)
 };
 
@@ -193,6 +195,23 @@ __host__ __device__ inline void fieldPixel(const FieldParams& p, int x, int y, i
     const float tcy = fieldValue(p, u, v + cstep, x, y);
 
     float tc = 0.5f + 0.5f * t * p.contrast;
+
+    // ---- layered composition -------------------------------------------------
+    // Three scales, and this is what separates "a painting" from "uniform
+    // noise texture": macro forms decide the light/dark layout of the frame
+    // and drift the hue; the main field is the flow; fine detail adds
+    // surface variation. The macro layer is what compositional depth means
+    // for a procedural image - regions of light and calm, not flat texture
+    // everywhere. (Only evaluated once per pixel; relief gradients sample
+    // the main field alone.)
+    const float macro = fbm2(u * p.view * 0.42f, v * p.view * 0.42f, p.seed + 1009u,
+                             p.octaves, p.lacunarity, p.gain) * p.macroAmt;
+    if (p.mode == kFieldWarp || p.mode == kFieldRidge || p.mode == kFieldLiquid) {
+        const float det = fbm2(u * p.view * 2.3f, v * p.view * 2.3f, p.seed + 2003u,
+                               p.octaves - 1, p.lacunarity, p.gain);
+        tc += 0.11f * det * p.contrast * p.macroAmt;
+    }
+    tc += 0.10f * macro;  // chroma drift follows the macro forms
     tc = tc < 0.0f ? 0.0f : (tc > 1.0f ? 1.0f : tc);
     paletteLookup(p.pal, tc, rgb);
 
@@ -200,6 +219,18 @@ __host__ __device__ inline void fieldPixel(const FieldParams& p, int x, int y, i
     rgb[0] *= rgb[0];
     rgb[1] *= rgb[1];
     rgb[2] *= rgb[2];
+
+    // Macro light: painterly light/dark regions PLUS a soft whole-frame
+    // directional gradient (light from upper-left), so the picture has a lit
+    // corner and a calm corner - composition, not uniform texture.
+    const float compo = macro - 0.45f * (u * 0.55f + v) * p.macroAmt;
+    float cm = 0.5f + 0.5f * compo;
+    cm = cm < 0.0f ? 0.0f : (cm > 1.0f ? 1.0f : cm);
+    // macroAmt 0 -> flat 1.0 (the v1 look), 1 -> full painterly light
+    const float light = 1.0f + (0.74f + 0.46f * cm - 1.0f) * p.macroAmt;
+    rgb[0] *= light;
+    rgb[1] *= light;
+    rgb[2] *= light;
 
     // Unnormalized fake normal (-gx, -gy, 1) dotted with a unit light:
     // no sqrt, no clamped normalization, cheap and stable. Fine slope at

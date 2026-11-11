@@ -21,6 +21,7 @@ struct PostParams
     float bloom = 0.12f;      // neutral glow strength
     float vignette = 0.35f;   // corner darkening amount
     float splitTone = 0.35f;  // teal shadows / warm highlights grade strength
+    float saturation = 1.12f; // chroma expansion around luminance (1 = off)
 };
 
 // Render the field into an RGB float buffer on the device (row-major, 3

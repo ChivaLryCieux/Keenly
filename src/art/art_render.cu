@@ -128,6 +128,17 @@ __global__ void composeKernel(float* out, const float* field, const float* glow,
         c[2] += (L - c[2]) * m;
     }
 
+    // Vividness: expand chroma around luminance (film-style color
+    // enhancement). No-op on achromatic content. Keeps the palette alive
+    // when the macro-light layer darkens the frame.
+    {
+        const float Ls = luminance(c);
+        const float s = p.saturation - 1.0f;
+        c[0] += (c[0] - Ls) * s;
+        c[1] += (c[1] - Ls) * s;
+        c[2] += (c[2] - Ls) * s;
+    }
+
     // Film grain: clumped at TWO scales (fine blobs + wide silver clumps)
     // with per-channel fine components - real film has one grain layer per
     // emulsion layer, so channels are slightly decorrelated. Amplitude is

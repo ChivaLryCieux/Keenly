@@ -54,7 +54,7 @@ enum SetBits
     kSetContrast = 1u << 3,  kSetRelief = 1u << 4,    kSetSeed = 1u << 5,
     kSetExposure = 1u << 6,  kSetGrain = 1u << 7,     kSetGrainScale = 1u << 8,
     kSetHalation = 1u << 9,  kSetBloom = 1u << 10,    kSetVignette = 1u << 11,
-    kSetSplitTone = 1u << 12, kSetBands = 1u << 13
+    kSetSplitTone = 1u << 12, kSetBands = 1u << 13, kSetSaturation = 1u << 14
 };
 
 static void applyPreset(art::FieldParams& f, art::PostParams& p, const std::string& name,
@@ -71,31 +71,37 @@ static void applyPreset(art::FieldParams& f, art::PostParams& p, const std::stri
         if (!(set & kSetHalation))   p.halation = 0.30f;
         if (!(set & kSetVignette))   p.vignette = 0.35f;
         if (!(set & kSetSplitTone))  p.splitTone = 0.0f;
+        if (!(set & kSetSaturation)) p.saturation = 1.0f;
     } else if (name == "cinema") {
-        // teal shadows -> amber highlights (the classic teal-orange grade)
-        f.pal.count = 5;
-        f.pal.pos[0] = 0.00f; f.pal.pos[1] = 0.30f; f.pal.pos[2] = 0.55f;
-        f.pal.pos[3] = 0.75f; f.pal.pos[4] = 1.00f;
-        f.pal.rgb[0][0] = 0.02f; f.pal.rgb[0][1] = 0.04f; f.pal.rgb[0][2] = 0.07f;
-        f.pal.rgb[1][0] = 0.06f; f.pal.rgb[1][1] = 0.22f; f.pal.rgb[1][2] = 0.30f;
-        f.pal.rgb[2][0] = 0.20f; f.pal.rgb[2][1] = 0.42f; f.pal.rgb[2][2] = 0.46f;
-        f.pal.rgb[3][0] = 0.80f; f.pal.rgb[3][1] = 0.52f; f.pal.rgb[3][2] = 0.28f;
-        f.pal.rgb[4][0] = 1.00f; f.pal.rgb[4][1] = 0.92f; f.pal.rgb[4][2] = 0.78f;
+        // teal shadows -> amber highlights (the classic teal-orange grade),
+        // 6 stops with a desaturated bridge so the teal-to-amber crossing
+        // never turns muddy brown.
+        f.pal.count = 6;
+        f.pal.pos[0] = 0.00f; f.pal.pos[1] = 0.20f; f.pal.pos[2] = 0.42f;
+        f.pal.pos[3] = 0.60f; f.pal.pos[4] = 0.80f; f.pal.pos[5] = 1.00f;
+        f.pal.rgb[0][0] = 0.015f; f.pal.rgb[0][1] = 0.030f; f.pal.rgb[0][2] = 0.050f;
+        f.pal.rgb[1][0] = 0.040f; f.pal.rgb[1][1] = 0.135f; f.pal.rgb[1][2] = 0.185f;
+        f.pal.rgb[2][0] = 0.115f; f.pal.rgb[2][1] = 0.315f; f.pal.rgb[2][2] = 0.375f;
+        f.pal.rgb[3][0] = 0.360f; f.pal.rgb[3][1] = 0.400f; f.pal.rgb[3][2] = 0.385f;
+        f.pal.rgb[4][0] = 0.735f; f.pal.rgb[4][1] = 0.490f; f.pal.rgb[4][2] = 0.300f;
+        f.pal.rgb[5][0] = 0.980f; f.pal.rgb[5][1] = 0.905f; f.pal.rgb[5][2] = 0.780f;
         if (!(set & kSetGrain))      p.grain = 0.05f;
         if (!(set & kSetGrainScale)) p.grainScale = 2.8f;
         if (!(set & kSetHalation))   p.halation = 0.40f;
         if (!(set & kSetVignette))   p.vignette = 0.38f;
         if (!(set & kSetSplitTone))  p.splitTone = 0.45f;
+        if (!(set & kSetSaturation)) p.saturation = 1.22f;
     } else if (name == "dusk") {
-        // indigo -> magenta -> coral (poster palette)
-        f.pal.count = 5;
-        f.pal.pos[0] = 0.00f; f.pal.pos[1] = 0.32f; f.pal.pos[2] = 0.58f;
-        f.pal.pos[3] = 0.80f; f.pal.pos[4] = 1.00f;
-        f.pal.rgb[0][0] = 0.05f; f.pal.rgb[0][1] = 0.04f; f.pal.rgb[0][2] = 0.12f;
-        f.pal.rgb[1][0] = 0.18f; f.pal.rgb[1][1] = 0.14f; f.pal.rgb[1][2] = 0.38f;
-        f.pal.rgb[2][0] = 0.62f; f.pal.rgb[2][1] = 0.22f; f.pal.rgb[2][2] = 0.48f;
-        f.pal.rgb[3][0] = 0.95f; f.pal.rgb[3][1] = 0.48f; f.pal.rgb[3][2] = 0.35f;
-        f.pal.rgb[4][0] = 1.00f; f.pal.rgb[4][1] = 0.88f; f.pal.rgb[4][2] = 0.72f;
+        // indigo -> magenta -> coral (poster palette), 6 stops
+        f.pal.count = 6;
+        f.pal.pos[0] = 0.00f; f.pal.pos[1] = 0.22f; f.pal.pos[2] = 0.46f;
+        f.pal.pos[3] = 0.66f; f.pal.pos[4] = 0.84f; f.pal.pos[5] = 1.00f;
+        f.pal.rgb[0][0] = 0.040f; f.pal.rgb[0][1] = 0.035f; f.pal.rgb[0][2] = 0.110f;
+        f.pal.rgb[1][0] = 0.140f; f.pal.rgb[1][1] = 0.110f; f.pal.rgb[1][2] = 0.330f;
+        f.pal.rgb[2][0] = 0.420f; f.pal.rgb[2][1] = 0.185f; f.pal.rgb[2][2] = 0.460f;
+        f.pal.rgb[3][0] = 0.720f; f.pal.rgb[3][1] = 0.290f; f.pal.rgb[3][2] = 0.470f;
+        f.pal.rgb[4][0] = 0.950f; f.pal.rgb[4][1] = 0.500f; f.pal.rgb[4][2] = 0.360f;
+        f.pal.rgb[5][0] = 1.000f; f.pal.rgb[5][1] = 0.880f; f.pal.rgb[5][2] = 0.730f;
         if (!(set & kSetView))       f.view = 2.8f;
         if (!(set & kSetWarp))       f.warp = 1.35f;
         if (!(set & kSetContrast))   f.contrast = 1.35f;
@@ -233,6 +239,8 @@ static void printUsage()
         "  --bloom F      neutral glow            (default 0.12)\n"
         "  --vignette F   corner darkening        (default 0.35)\n"
         "  --split-tone F teal shadows / warm highs grade (default 0.35)\n"
+        "  --saturation F chroma expansion around luminance (default 1.12)\n"
+        "  --macro   F    layered composition strength, 0 = flat (default 1.0)\n"
         "  --no-post      skip grain/glow/vignette/tonemap (raw field)\n"
         "  --no-check     skip the CPU reference gate\n"
         "  --grid   P     render a 3x3 style showcase grid to PNG path P\n"
@@ -358,6 +366,15 @@ static bool parseArgs(int argc, char** argv, Args& a)
             if (!v) return false;
             a.postp.splitTone = float(std::atof(v));
             a.postSet |= kSetSplitTone;
+        } else if (key == "--saturation") {
+            const char* v = next("--saturation");
+            if (!v) return false;
+            a.postp.saturation = float(std::atof(v));
+            a.postSet |= kSetSaturation;
+        } else if (key == "--macro") {
+            const char* v = next("--macro");
+            if (!v) return false;
+            a.field.macroAmt = float(std::atof(v));
         } else if (key == "--no-post") {
             a.post = false;
         } else if (key == "--grid") {
@@ -409,9 +426,13 @@ static bool runCheck(const art::FieldParams& p)
     return d.maxAbs == 0.0;
 }
 
-// 3x3 showcase grid: nine style cells (generator x palette x seed) rendered
-// tile by tile and pasted into one image with a dark gap grid. Each cell is
-// a full pipeline render (field + post) and runs the bit-exact verify gate.
+// 3x3 showcase grid: nine style cells rendered tile by tile and pasted into
+// one image with a dark gap grid. Each cell is a full pipeline render
+// (field + post) and runs the bit-exact verify gate.
+//
+// Current lineup: nine variants of the organic cinematic family (the look
+// that worked), spanning palettes and scale/warp/contrast tuning instead of
+// jumping between shape languages. A zero override keeps the preset default.
 static int runGrid(const Args& args)
 {
     struct Cell
@@ -419,17 +440,21 @@ static int runGrid(const Args& args)
         const char* preset;
         int mode;
         unsigned seed;
+        float view;      // 0 = preset default
+        float warp;
+        float contrast;
+        float relief;
     };
     static const Cell cells[9] = {
-        {"ice",    art::kFieldFacet,  5u},   // austere crystal facets
-        {"mono",   art::kFieldPrism,  6u},   // black-white chevron grid
-        {"ember",  art::kFieldPrism,  21u},  // molten diamond lattice
-        {"ice",    art::kFieldFrost,  8u},   // frosted glass
-        {"mono",   art::kFieldFrost,  2u},   // matte monochrome frost
-        {"dusk",   art::kFieldLiquid, 3u},   // oil-slick metal
-        {"cinema", art::kFieldLiquid, 7u},   // teal-orange liquid metal
-        {"ember",  art::kFieldFacet,  11u},  // cracked lava
-        {"cinema", art::kFieldWarp,   7u}    // anchor: the loved organic look
+        {"cinema", art::kFieldWarp,  7u,  0.0f, 0.0f, 0.0f, 0.0f},  // hero anchor
+        {"cinema", art::kFieldWarp,  55u, 0.0f, 1.7f, 0.0f, 0.0f},  // stronger twist
+        {"dusk",   art::kFieldWarp,  21u, 0.0f, 0.0f, 0.0f, 0.0f},  // magenta flow
+        {"moss",   art::kFieldWarp,  33u, 0.0f, 0.0f, 0.0f, 0.0f},  // green organic
+        {"ember",  art::kFieldWarp,  14u, 0.0f, 0.0f, 0.0f, 0.0f},  // warm organic
+        {"ice",    art::kFieldWarp,  8u,  2.6f, 0.0f, 0.0f, 0.0f},  // finer forms
+        {"dusk",   art::kFieldRidge, 11u, 0.0f, 0.0f, 0.0f, 0.0f},  // marble veins
+        {"cinema", art::kFieldLiquid, 7u, 0.0f, 0.0f, 0.0f, 0.0f},  // glossy metal
+        {"cinema", art::kFieldWarp,  91u, 2.2f, 0.0f, 1.5f, 3.0f}   // drama variant
     };
 
     const int tile = args.tile;
@@ -445,6 +470,10 @@ static int runGrid(const Args& args)
         f.mode = cells[i].mode;
         f.seed = cells[i].seed;
         p.seed = cells[i].seed;
+        if (cells[i].view > 0.0f)     f.view = cells[i].view;
+        if (cells[i].warp > 0.0f)     f.warp = cells[i].warp;
+        if (cells[i].contrast > 0.0f) f.contrast = cells[i].contrast;
+        if (cells[i].relief > 0.0f)   f.relief = cells[i].relief;
 
         std::printf("cell %d : %-6s mode %d seed %u\n", i + 1, cells[i].preset,
                     f.mode, f.seed);
