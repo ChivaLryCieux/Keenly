@@ -4,11 +4,11 @@
 //
 // Same fieldPixel() as the GPU kernel, plain serial loops. Comparing the two
 // buffers catches kernel plumbing bugs (indexing, swapped params, launch
-// config). The math itself is shared by construction - see art_pixel.cuh.
+// config). The math itself is shared by construction - see pixel.cuh.
 
-#include "art_render.h"
+#include "render.h"
 
-namespace art
+namespace keenly
 {
 
 void renderFieldCpu(float* hRgb, int w, int h, const FieldParams& p)
@@ -18,4 +18,4 @@ void renderFieldCpu(float* hRgb, int w, int h, const FieldParams& p)
             fieldPixel(p, x, y, w, h, hRgb + (size_t(y) * w + x) * 3);
 }
 
-}  // namespace art
+}  // namespace keenly

@@ -1,5 +1,5 @@
 #pragma once
-// Common CUDA helpers.
+// Common CUDA helpers for Keenly.
 //
 // ASCII-ONLY FILE ON PURPOSE. On a Chinese Windows (codepage 936) cl.exe
 // misreads UTF-8 non-ASCII bytes in .cu/.h sources and the byte misalignment
@@ -50,13 +50,3 @@ private:
     cudaEvent_t start_{};
     cudaEvent_t stop_{};
 };
-
-// Deterministic LCG fill in [-1, 1). Deterministic so every run is comparable.
-inline void fillRandomHost(float* data, size_t count, unsigned seed = 12345u)
-{
-    unsigned state = seed;
-    for (size_t i = 0; i < count; ++i) {
-        state = state * 1664525u + 1013904223u;
-        data[i] = static_cast<float>((state >> 8) & 0xFFFFFFu) / 8388608.0f * 2.0f - 1.0f;
-    }
-}

@@ -4,7 +4,7 @@
 // ASCII-ONLY FILE ON PURPOSE (see src/common/cuda_utils.h for the reason).
 //
 // This is the single source of truth for the art math. The GPU kernel
-// (art_render.cu) and the CPU reference (art_ref.cu) both call fieldPixel(),
+// (render.cu) and the CPU reference (reference.cu) both call fieldPixel(),
 // so the verify gate compares the two *execution paths* with a tight relL2
 // budget instead of drifting apart through duplicated code.
 //
@@ -16,9 +16,9 @@
 // Output is LINEAR RGB (possibly > 1 in highlights); tonemap / grain / dither
 // are stage 2 (post) and encoding happens at PNG write time.
 
-#include "art_noise.cuh"
+#include "noise.cuh"
 
-namespace art
+namespace keenly
 {
 
 // Color ramp: up to 6 stops, strictly increasing positions. Stops live in
@@ -266,4 +266,4 @@ __host__ __device__ inline void fieldPixel(const FieldParams& p, int x, int y, i
     }
 }
 
-}  // namespace art
+}  // namespace keenly

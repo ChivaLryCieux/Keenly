@@ -2,10 +2,10 @@
 //
 // ASCII-ONLY FILE ON PURPOSE (see src/common/cuda_utils.h for the reason).
 
-#include "art_render.h"
+#include "render.h"
 #include "cuda_utils.h"
 
-namespace art
+namespace keenly
 {
 
 namespace
@@ -212,4 +212,4 @@ void renderPostGpu(float* dOut, const float* dField, int w, int h, const PostPar
     CUDA_CHECK(cudaFree(dTmp));
 }
 
-}  // namespace art
+}  // namespace keenly

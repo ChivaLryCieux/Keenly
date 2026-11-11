@@ -21,10 +21,10 @@
 
 #include <cuda_runtime.h>
 
-#include "art_render.h"
+#include "render.h"
 #include "cuda_utils.h"
 #include "png_writer.h"
-#include "reference.h"
+#include "compare.h"
 
 struct Args
 {
@@ -33,12 +33,13 @@ struct Args
     int depth = 16;     // PNG bits per channel: 8 or 16
     bool check = true;
     bool post = true;
+    bool checkAll = false;  // run the gate on every generator and exit
     unsigned postSet = 0;  // which params were explicitly set on the CLI
     std::string preset = "cinema";
     std::string grid;      // non-empty: render the 3x3 showcase to this path
     int tile = 800;        // showcase cell size
-    art::FieldParams field;
-    art::PostParams postp;
+    keenly::FieldParams field;
+    keenly::PostParams postp;
     std::string out = "out/field.png";
 };
 
@@ -57,7 +58,7 @@ enum SetBits
     kSetSplitTone = 1u << 12, kSetBands = 1u << 13, kSetSaturation = 1u << 14
 };
 
-static void applyPreset(art::FieldParams& f, art::PostParams& p, const std::string& name,
+static void applyPreset(keenly::FieldParams& f, keenly::PostParams& p, const std::string& name,
                         unsigned set)
 {
     if (name == "mono") {
@@ -203,7 +204,7 @@ static bool writeImage(const std::string& path, int w, int h, int depth,
             v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
             img[i] = uint16_t(v * 65535.0f + 0.5f);
         }
-        return art::writePng(path, w, h, 16, img.data());
+        return keenly::writePng(path, w, h, 16, img.data());
     }
     std::vector<uint8_t> img(n);
     for (size_t i = 0; i < n; ++i) {
@@ -211,14 +212,14 @@ static bool writeImage(const std::string& path, int w, int h, int depth,
         v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
         img[i] = uint8_t(v * 255.0f + 0.5f);
     }
-    return art::writePng(path, w, h, 8, img.data());
+    return keenly::writePng(path, w, h, 8, img.data());
 }
 
 static void printUsage()
 {
     std::printf(
-        "render_art - GPU generative art stills -> PNG\n"
-        "usage: render_art [options]\n"
+        "Keenly - CUDA generative art studio: procedural stills -> PNG\n"
+        "usage: keenly [options]\n"
         "  --width  N     image width in pixels   (default 2560)\n"
         "  --height N     image height in pixels  (default 1072)\n"
         "  --depth  D     PNG bits per channel: 8 or 16 (default 16)\n"
@@ -233,7 +234,7 @@ static void printUsage()
         "  --contrast F   field shaping           (default 1.4)\n"
         "  --relief F     shading strength        (default 2.5)\n"
         "  --exposure F   linear exposure         (default 1.0)\n"
-        "  --grain F      grain amplitude         (default 0.06)\n"
+        "  --grain F      grain amplitude         (default 0.05)\n"
         "  --grain-scale F grain clump size, px   (default 2.5)\n"
         "  --halation F   red highlight glow      (default 0.35)\n"
         "  --bloom F      neutral glow            (default 0.12)\n"
@@ -243,6 +244,7 @@ static void printUsage()
         "  --macro   F    layered composition strength, 0 = flat (default 1.0)\n"
         "  --no-post      skip grain/glow/vignette/tonemap (raw field)\n"
         "  --no-check     skip the CPU reference gate\n"
+        "  --check-all    run the bit-exact gate on every generator, then exit\n"
         "  --grid   P     render a 3x3 style showcase grid to PNG path P\n"
         "  --tile   N     showcase cell size in pixels (default 800)\n");
 }
@@ -387,6 +389,8 @@ static bool parseArgs(int argc, char** argv, Args& a)
             a.tile = std::atoi(v);
         } else if (key == "--no-check") {
             a.check = false;
+        } else if (key == "--check-all") {
+            a.checkAll = true;
         } else {
             std::fprintf(stderr, "unknown option: %s\n", key.c_str());
             return false;
@@ -406,17 +410,17 @@ static bool parseArgs(int argc, char** argv, Args& a)
 // CPU reference gate: same pixel shader, serial vs parallel execution.
 // Bit-exact pass condition (maxAbs == 0), see file header for why this is
 // achievable and what breaking it means.
-static bool runCheck(const art::FieldParams& p)
+static bool runCheck(const keenly::FieldParams& p)
 {
     const int w = 320, h = 180;
     const size_t n = size_t(w) * size_t(h) * 3;
     std::vector<float> ref(n), gpu(n);
 
-    art::renderFieldCpu(ref.data(), w, h, p);
+    keenly::renderFieldCpu(ref.data(), w, h, p);
 
     float* dBuf = nullptr;
     CUDA_CHECK(cudaMalloc(&dBuf, n * sizeof(float)));
-    art::renderFieldGpu(dBuf, w, h, p);
+    keenly::renderFieldGpu(dBuf, w, h, p);
     CUDA_CHECK(cudaMemcpy(gpu.data(), dBuf, n * sizeof(float), cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaFree(dBuf));
 
@@ -424,6 +428,26 @@ static bool runCheck(const art::FieldParams& p)
     std::printf("check  : relL2 %.3e  maxAbs %.3e  (GPU vs CPU, %dx%d, expect 0)\n",
                 d.relL2, d.maxAbs, w, h);
     return d.maxAbs == 0.0;
+}
+
+// Regression entry point (--check-all): the bit-exact gate on every field
+// generator. This is what scripts\verify.ps1 runs after every change.
+static int runCheckAll()
+{
+    static const char* kModes[7] = {"warp", "ridge", "bands", "frost",
+                                    "facet", "prism", "liquid"};
+    bool allOk = true;
+    for (int m = 0; m < 7; ++m) {
+        keenly::FieldParams f;
+        keenly::PostParams p;
+        applyPreset(f, p, "cinema", 0u);
+        f.mode = m;
+        f.seed = 31u + unsigned(m) * 17u;
+        std::printf("mode %-6s ", kModes[m]);
+        if (!runCheck(f)) allOk = false;
+    }
+    std::printf(allOk ? "ALL MODES BIT-EXACT\n" : "GATE FAILED\n");
+    return allOk ? 0 : 1;
 }
 
 // 3x3 showcase grid: nine style cells rendered tile by tile and pasted into
@@ -446,15 +470,15 @@ static int runGrid(const Args& args)
         float relief;
     };
     static const Cell cells[9] = {
-        {"cinema", art::kFieldWarp,  7u,  0.0f, 0.0f, 0.0f, 0.0f},  // hero anchor
-        {"cinema", art::kFieldWarp,  55u, 0.0f, 1.7f, 0.0f, 0.0f},  // stronger twist
-        {"dusk",   art::kFieldWarp,  21u, 0.0f, 0.0f, 0.0f, 0.0f},  // magenta flow
-        {"moss",   art::kFieldWarp,  33u, 0.0f, 0.0f, 0.0f, 0.0f},  // green organic
-        {"ember",  art::kFieldWarp,  14u, 0.0f, 0.0f, 0.0f, 0.0f},  // warm organic
-        {"ice",    art::kFieldWarp,  8u,  2.6f, 0.0f, 0.0f, 0.0f},  // finer forms
-        {"dusk",   art::kFieldRidge, 11u, 0.0f, 0.0f, 0.0f, 0.0f},  // marble veins
-        {"cinema", art::kFieldLiquid, 7u, 0.0f, 0.0f, 0.0f, 0.0f},  // glossy metal
-        {"cinema", art::kFieldWarp,  91u, 2.2f, 0.0f, 1.5f, 3.0f}   // drama variant
+        {"cinema", keenly::kFieldWarp,  7u,  0.0f, 0.0f, 0.0f, 0.0f},  // hero anchor
+        {"cinema", keenly::kFieldWarp,  55u, 0.0f, 1.7f, 0.0f, 0.0f},  // stronger twist
+        {"dusk",   keenly::kFieldWarp,  21u, 0.0f, 0.0f, 0.0f, 0.0f},  // magenta flow
+        {"moss",   keenly::kFieldWarp,  33u, 0.0f, 0.0f, 0.0f, 0.0f},  // green organic
+        {"ember",  keenly::kFieldWarp,  14u, 0.0f, 0.0f, 0.0f, 0.0f},  // warm organic
+        {"ice",    keenly::kFieldWarp,  8u,  2.6f, 0.0f, 0.0f, 0.0f},  // finer forms
+        {"dusk",   keenly::kFieldRidge, 11u, 0.0f, 0.0f, 0.0f, 0.0f},  // marble veins
+        {"cinema", keenly::kFieldLiquid, 7u, 0.0f, 0.0f, 0.0f, 0.0f},  // glossy metal
+        {"cinema", keenly::kFieldWarp,  91u, 2.2f, 0.0f, 1.5f, 3.0f}   // drama variant
     };
 
     const int tile = args.tile;
@@ -464,8 +488,8 @@ static int runGrid(const Args& args)
     std::vector<float> cellImg(size_t(tile) * size_t(tile) * 3);
 
     for (int i = 0; i < 9; ++i) {
-        art::FieldParams f;
-        art::PostParams p;
+        keenly::FieldParams f;
+        keenly::PostParams p;
         applyPreset(f, p, cells[i].preset, 0u);
         f.mode = cells[i].mode;
         f.seed = cells[i].seed;
@@ -486,8 +510,8 @@ static int runGrid(const Args& args)
         float *dField = nullptr, *dOut = nullptr;
         CUDA_CHECK(cudaMalloc(&dField, n * sizeof(float)));
         CUDA_CHECK(cudaMalloc(&dOut, n * sizeof(float)));
-        art::renderFieldGpu(dField, tile, tile, f);
-        art::renderPostGpu(dOut, dField, tile, tile, p);
+        keenly::renderFieldGpu(dField, tile, tile, f);
+        keenly::renderPostGpu(dOut, dField, tile, tile, p);
         CUDA_CHECK(cudaMemcpy(cellImg.data(), dOut, n * sizeof(float),
                               cudaMemcpyDeviceToHost));
         CUDA_CHECK(cudaFree(dField));
@@ -521,6 +545,9 @@ int main(int argc, char** argv)
     CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
     std::printf("device : %s\n", prop.name);
 
+    if (args.checkAll)
+        return runCheckAll();
+
     if (!args.grid.empty())
         return runGrid(args);
 
@@ -540,18 +567,18 @@ int main(int argc, char** argv)
 
     GpuTimer timer;
     timer.start();
-    art::renderFieldGpu(dField, args.width, args.height, args.field);
+    keenly::renderFieldGpu(dField, args.width, args.height, args.field);
     const float msField = timer.stop();
     std::printf("field  : %.3f ms  (%.1f Mpixel/s)\n", msField, pixels / (double(msField) * 1e3));
 
     std::vector<float> hRgb(pixels * 3);
     if (args.post) {
-        art::PostParams post = args.postp;
+        keenly::PostParams post = args.postp;
         post.seed = args.field.seed;  // one seed per image: grain rerolls per seed
         float* dOut = nullptr;
         CUDA_CHECK(cudaMalloc(&dOut, pixels * 3 * sizeof(float)));
         timer.start();
-        art::renderPostGpu(dOut, dField, args.width, args.height, post);
+        keenly::renderPostGpu(dOut, dField, args.width, args.height, post);
         const float msPost = timer.stop();
         std::printf("post   : %.3f ms  (grain %.3f  halation %.2f  bloom %.2f  vignette %.2f  split %.2f)\n",
                     msPost, post.grain, post.halation, post.bloom, post.vignette,

@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-namespace art
+namespace keenly
 {
 namespace png_detail
 {
@@ -189,4 +189,4 @@ inline bool writePng(const std::string& path, int width, int height, int bitDept
     return std::fclose(f) == 0;
 }
 
-}  // namespace art
+}  // namespace keenly

@@ -6,7 +6,7 @@
 // Every function is a pure function of integer coordinates + seed:
 //   - deterministic: same seed -> same picture, on CPU and GPU alike,
 //   - tileable at any size: no hidden global state (future A1 tiling),
-//   - shared by the GPU kernels and the CPU reference (art_ref.cu), so the
+//   - shared by the GPU kernels and the CPU reference (reference.cu), so the
 //     verify gate compares execution paths, not two divergent copies of math.
 //
 // Bit-level notes: hashing is integer-only (exact on both sides); noise uses
@@ -17,7 +17,7 @@
 #include <cmath>
 #include <cstdint>
 
-namespace art
+namespace keenly
 {
 
 // ---- integer hashing ------------------------------------------------------
@@ -220,4 +220,4 @@ __host__ __device__ inline float powi(float x, int n)
     return r;
 }
 
-}  // namespace art
+}  // namespace keenly
