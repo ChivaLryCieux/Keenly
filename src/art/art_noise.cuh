@@ -53,6 +53,14 @@ __host__ __device__ inline float fade(float t)
     return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
 }
 
+// Smoothstep a -> b, clamped. Polynomial: no transcendentals anywhere.
+__host__ __device__ inline float sstep(float a, float b, float x)
+{
+    float t = (x - a) / (b - a);
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    return t * t * (3.0f - 2.0f * t);
+}
+
 // Pick a unit gradient from 8 fixed directions (cos/sin of k*pi/4), chosen
 // by hash bits. No trig, no tables in device code: CPU/GPU get identical
 // values. The 8-direction set is enough once fBm sums several octaves.

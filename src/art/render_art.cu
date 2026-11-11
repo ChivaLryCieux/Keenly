@@ -32,8 +32,10 @@ struct Args
     int height = 1072;  // 2.39:1 cinema frame
     int depth = 16;     // PNG bits per channel: 8 or 16
     bool check = true;
+    bool post = true;
     std::string preset = "cinema";
     art::FieldParams field;
+    art::PostParams postp;
     std::string out = "out/field.png";
 };
 
@@ -80,6 +82,17 @@ static inline float srgbEncode(float v)
     return v <= 0.0031308f ? 12.92f * v : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
 }
 
+// Triangular-PDF dither before quantization: kills 8-bit banding in smooth
+// gradients (vignette, glow). Deterministic LCG per sample index.
+static inline float tpdfDither(uint32_t idx, float step)
+{
+    uint32_t s = idx * 1664525u + 1013904223u;
+    const float r1 = float((s >> 8) & 0xFFFFFFu) * (1.0f / 16777216.0f);
+    s = s * 1664525u + 1013904223u;
+    const float r2 = float((s >> 8) & 0xFFFFFFu) * (1.0f / 16777216.0f);
+    return (r1 - r2) * step;
+}
+
 static void printUsage()
 {
     std::printf(
@@ -96,6 +109,13 @@ static void printUsage()
         "  --warp   F     domain warp strength    (default 1.2)\n"
         "  --contrast F   field shaping           (default 1.4)\n"
         "  --relief F     shading strength        (default 2.5)\n"
+        "  --exposure F   linear exposure         (default 1.0)\n"
+        "  --grain F      grain amplitude         (default 0.06)\n"
+        "  --grain-scale F grain clump size, px   (default 2.5)\n"
+        "  --halation F   red highlight glow      (default 0.35)\n"
+        "  --bloom F      neutral glow            (default 0.12)\n"
+        "  --vignette F   corner darkening        (default 0.35)\n"
+        "  --no-post      skip grain/glow/vignette/tonemap (raw field)\n"
         "  --no-check     skip the CPU reference gate\n");
 }
 
@@ -157,6 +177,32 @@ static bool parseArgs(int argc, char** argv, Args& a)
             const char* v = next("--relief");
             if (!v) return false;
             a.field.relief = float(std::atof(v));
+        } else if (key == "--exposure") {
+            const char* v = next("--exposure");
+            if (!v) return false;
+            a.postp.exposure = float(std::atof(v));
+        } else if (key == "--grain") {
+            const char* v = next("--grain");
+            if (!v) return false;
+            a.postp.grain = float(std::atof(v));
+        } else if (key == "--grain-scale") {
+            const char* v = next("--grain-scale");
+            if (!v) return false;
+            a.postp.grainScale = float(std::atof(v));
+        } else if (key == "--halation") {
+            const char* v = next("--halation");
+            if (!v) return false;
+            a.postp.halation = float(std::atof(v));
+        } else if (key == "--bloom") {
+            const char* v = next("--bloom");
+            if (!v) return false;
+            a.postp.bloom = float(std::atof(v));
+        } else if (key == "--vignette") {
+            const char* v = next("--vignette");
+            if (!v) return false;
+            a.postp.vignette = float(std::atof(v));
+        } else if (key == "--no-post") {
+            a.post = false;
         } else if (key == "--no-check") {
             a.check = false;
         } else {
@@ -214,20 +260,35 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    float* dRgb = nullptr;
+    float* dField = nullptr;
     const size_t pixels = size_t(args.width) * size_t(args.height);
-    CUDA_CHECK(cudaMalloc(&dRgb, pixels * 3 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dField, pixels * 3 * sizeof(float)));
 
     GpuTimer timer;
     timer.start();
-    art::renderFieldGpu(dRgb, args.width, args.height, args.field);
-    const float ms = timer.stop();
-    std::printf("kernel : %.3f ms  (%.1f Mpixel/s)\n", ms, pixels / (double(ms) * 1e3));
+    art::renderFieldGpu(dField, args.width, args.height, args.field);
+    const float msField = timer.stop();
+    std::printf("field  : %.3f ms  (%.1f Mpixel/s)\n", msField, pixels / (double(msField) * 1e3));
 
     std::vector<float> hRgb(pixels * 3);
-    CUDA_CHECK(cudaMemcpy(hRgb.data(), dRgb, pixels * 3 * sizeof(float),
-                          cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaFree(dRgb));
+    if (args.post) {
+        art::PostParams post = args.postp;
+        post.seed = args.field.seed;  // one seed per image: grain rerolls per seed
+        float* dOut = nullptr;
+        CUDA_CHECK(cudaMalloc(&dOut, pixels * 3 * sizeof(float)));
+        timer.start();
+        art::renderPostGpu(dOut, dField, args.width, args.height, post);
+        const float msPost = timer.stop();
+        std::printf("post   : %.3f ms  (grain %.3f  halation %.2f  bloom %.2f  vignette %.2f)\n",
+                    msPost, post.grain, post.halation, post.bloom, post.vignette);
+        CUDA_CHECK(cudaMemcpy(hRgb.data(), dOut, pixels * 3 * sizeof(float),
+                              cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaFree(dOut));
+    } else {
+        CUDA_CHECK(cudaMemcpy(hRgb.data(), dField, pixels * 3 * sizeof(float),
+                              cudaMemcpyDeviceToHost));
+    }
+    CUDA_CHECK(cudaFree(dField));
 
     std::error_code ec;
     std::filesystem::path outPath(args.out);
@@ -237,13 +298,19 @@ int main(int argc, char** argv)
     bool ok = false;
     if (args.depth == 16) {
         std::vector<uint16_t> img(pixels * 3);
-        for (size_t i = 0; i < pixels * 3; ++i)
-            img[i] = uint16_t(srgbEncode(hRgb[i]) * 65535.0f + 0.5f);
+        for (size_t i = 0; i < pixels * 3; ++i) {
+            float v = srgbEncode(hRgb[i]) + tpdfDither(uint32_t(i), 1.0f / 65535.0f);
+            v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+            img[i] = uint16_t(v * 65535.0f + 0.5f);
+        }
         ok = art::writePng(args.out, args.width, args.height, 16, img.data());
     } else {
         std::vector<uint8_t> img(pixels * 3);
-        for (size_t i = 0; i < pixels * 3; ++i)
-            img[i] = uint8_t(srgbEncode(hRgb[i]) * 255.0f + 0.5f);
+        for (size_t i = 0; i < pixels * 3; ++i) {
+            float v = srgbEncode(hRgb[i]) + tpdfDither(uint32_t(i), 1.0f / 255.0f);
+            v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+            img[i] = uint8_t(v * 255.0f + 0.5f);
+        }
         ok = art::writePng(args.out, args.width, args.height, 8, img.data());
     }
 
