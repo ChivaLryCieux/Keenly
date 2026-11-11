@@ -19,6 +19,15 @@ __global__ void fieldKernel(float* rgb, int w, int h, FieldParams p)
     fieldPixel(p, x, y, w, h, rgb + (size_t(y) * w + x) * 3);
 }
 
+// One-pass icon compositor (icon.cuh): background + glyph + frame + mask.
+__global__ void iconKernel(float* rgba, int w, int h, IconParams p)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= w || y >= h) return;
+    iconPixel(p, x, y, w, h, rgba + (size_t(y) * w + x) * 4);
+}
+
 // ---- post chain (stage 2) --------------------------------------------------
 // Half-res bright pass, separable gaussian for the glow, then a per-pixel
 // compose: halation + the shared post tail (post.cuh: split-tone, grain,
@@ -120,6 +129,16 @@ void renderFieldGpu(float* dRgb, int w, int h, const FieldParams& p)
                     (h + int(block.y) - 1) / int(block.y));
     fieldKernel<<<grid, block>>>(dRgb, w, h, p);
     CUDA_CHECK(cudaGetLastError());  // a failed launch must not look like success
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+void renderIconGpu(float* dRgba, int w, int h, const IconParams& p)
+{
+    const dim3 block(16, 16);
+    const dim3 grid((w + int(block.x) - 1) / int(block.x),
+                    (h + int(block.y) - 1) / int(block.y));
+    iconKernel<<<grid, block>>>(dRgba, w, h, p);
+    CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 

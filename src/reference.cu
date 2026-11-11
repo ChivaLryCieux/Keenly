@@ -18,4 +18,11 @@ void renderFieldCpu(float* hRgb, int w, int h, const FieldParams& p)
             fieldPixel(p, x, y, w, h, hRgb + (size_t(y) * w + x) * 3);
 }
 
+void renderIconCpu(float* hRgba, int w, int h, const IconParams& p)
+{
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            iconPixel(p, x, y, w, h, hRgba + (size_t(y) * w + x) * 4);
+}
+
 }  // namespace keenly

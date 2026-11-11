@@ -6,6 +6,7 @@
 
 #include "pixel.cuh"
 #include "post.cuh"
+#include "icon.cuh"
 
 namespace keenly
 {
@@ -25,5 +26,13 @@ void renderPostGpu(float* dOut, const float* dField, int w, int h, const PostPar
 
 // CPU reference: identical pixel shader, serial row-major traversal.
 void renderFieldCpu(float* hRgb, int w, int h, const FieldParams& p);
+
+// Icon render: RGBA float buffer (row-major, 4 floats per pixel), alpha is
+// the rounded-rect / rect mask coverage. One pass - the glow is SDF-driven,
+// no blur chain - so icons are a single pure-function kernel.
+void renderIconGpu(float* dRgba, int w, int h, const IconParams& p);
+
+// CPU reference for the icon compositor (same iconPixel).
+void renderIconCpu(float* hRgba, int w, int h, const IconParams& p);
 
 }  // namespace keenly

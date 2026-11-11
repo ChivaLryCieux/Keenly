@@ -3,7 +3,7 @@
 //
 // ASCII-ONLY FILE ON PURPOSE (see src/common/cuda_utils.h for the reason).
 //
-// RGB only, 8-bit or 16-bit per channel. The IDAT zlib stream uses
+// RGB or RGBA, 8-bit or 16-bit per channel. The IDAT zlib stream uses
 // uncompressed ("stored") DEFLATE blocks: valid zlib, decodes everywhere,
 // zero external dependencies, zero compression. So a 16-bit A1 poster is a
 // big file on disk. Real compression is listed as future work in docs/art.md.
@@ -126,20 +126,22 @@ inline void writeChunk(std::FILE* f, const char type[4], const std::vector<uint8
 
 }  // namespace png_detail
 
-// pixels: RGB interleaved, row-major, top row first.
+// pixels: RGB(A) interleaved, row-major, top row first.
 //   bitDepth 8  -> uint8_t samples
 //   bitDepth 16 -> uint16_t samples in host order (PNG stores big-endian,
 //                  so byteswapped while writing)
+//   channels 3  -> RGB  (color type 2)
+//   channels 4  -> RGBA (color type 6, straight alpha)
 // Returns false on I/O failure.
 inline bool writePng(const std::string& path, int width, int height, int bitDepth,
-                     const void* pixels)
+                     const void* pixels, int channels = 3)
 {
     using namespace png_detail;
     if (width <= 0 || height <= 0 || pixels == nullptr) return false;
     if (bitDepth != 8 && bitDepth != 16) return false;
+    if (channels != 3 && channels != 4) return false;
 
-    const size_t samples = size_t(width) * size_t(height) * 3;
-    const size_t rowBytes = size_t(width) * 3 * (bitDepth / 8);
+    const size_t rowBytes = size_t(width) * channels * (bitDepth / 8);
 
     // Raw scanline stream: one filter byte (0 = None) before every row.
     std::vector<uint8_t> raw(size_t(height) * (rowBytes + 1));
@@ -155,14 +157,13 @@ inline bool writePng(const std::string& path, int width, int height, int bitDept
         for (int y = 0; y < height; ++y) {
             uint8_t* dst = raw.data() + size_t(y) * (rowBytes + 1);
             dst[0] = 0;
-            const uint16_t* row = src + size_t(y) * size_t(width) * 3;
-            for (size_t i = 0, n = size_t(width) * 3; i < n; ++i) {
+            const uint16_t* row = src + size_t(y) * size_t(width) * channels;
+            for (size_t i = 0, n = size_t(width) * channels; i < n; ++i) {
                 dst[1 + 2 * i] = uint8_t(row[i] >> 8);
                 dst[2 + 2 * i] = uint8_t(row[i] & 0xFF);
             }
         }
     }
-    (void)samples;
 
     std::vector<uint8_t> z;
     z.reserve(raw.size() + (raw.size() / 65535 + 1) * 5 + 16);
@@ -178,7 +179,7 @@ inline bool writePng(const std::string& path, int width, int height, int bitDept
     putBe32(ihdr, uint32_t(width));
     putBe32(ihdr, uint32_t(height));
     ihdr.push_back(uint8_t(bitDepth));  // bit depth per channel
-    ihdr.push_back(2);                  // color type 2 = truecolor RGB
+    ihdr.push_back(channels == 4 ? uint8_t(6) : uint8_t(2));  // 6 = RGBA, 2 = RGB
     ihdr.push_back(0);                  // compression method 0 = deflate
     ihdr.push_back(0);                  // filter method 0
     ihdr.push_back(0);                  // interlace 0 = none
