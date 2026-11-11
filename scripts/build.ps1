@@ -1,4 +1,4 @@
-# Configure + build both benchmarks.
+# Configure + build Keenly.
 #
 # Run from a normal PowerShell:
 #   powershell -ExecutionPolicy Bypass -File scripts\build.ps1
@@ -43,4 +43,4 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "Build OK. Binaries:"
-Get-ChildItem (Join-Path $buildDir "src\*\*.exe") | ForEach-Object { Write-Host "  $($_.FullName)" }
+Get-ChildItem (Join-Path $buildDir "*.exe") | ForEach-Object { Write-Host "  $($_.FullName)" }

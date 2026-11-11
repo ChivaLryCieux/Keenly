@@ -1,4 +1,4 @@
-# Build all targets by invoking nvcc directly.
+# Build Keenly by invoking nvcc directly.
 #
 # Use this when the Ninja/CMake path is unavailable - for example inside a
 # confined agent sandbox where Ninja cannot capture child-process output and
@@ -14,45 +14,20 @@ New-Item -ItemType Directory -Path $bin -Force | Out-Null
 # -Xcompiler=/utf-8 uses the = form on purpose: embedding a quoted argument
 # inside a PowerShell string here just fights the quote parser.
 # -std=c++17 matches CMAKE_CXX_STANDARD / CMAKE_CUDA_STANDARD in CMakeLists.txt.
-# matmul/conv chase speed: --use_fast_math. render_art chases CPU/GPU
-# reproducibility and overrides Flags with strict IEEE math instead.
-$flags = "-arch=sm_75 -O3 --use_fast_math -lineinfo --expt-relaxed-constexpr -std=c++17 -Xcompiler=/utf-8"
-$ieeeFlags = "-arch=sm_75 -O3 -lineinfo --expt-relaxed-constexpr -std=c++17 --fmad=false -Xcompiler=/utf-8"
+#
+# --fmad=false + NO --use_fast_math: Keenly renders strict IEEE math so GPU
+# output is bit-identical to the CPU reference and the verify gate can demand
+# maxAbs == 0. Speed is not the bottleneck; reproducibility is the product.
+$flags = "-arch=sm_75 -O3 -lineinfo --expt-relaxed-constexpr -std=c++17 --fmad=false -Xcompiler=/utf-8"
 
-# Every Src / Inc entry is relative to $root, so no `cd` is needed.
-$targets = @(
-    @{ Name = "bench_matmul"
-       Src = @("src\matmul\bench_matmul.cu", "src\matmul\matmul.cu", "src\common\reference.cu")
-       Inc = @("src\common"); Libs = @("-lcublas") },
-    @{ Name = "bench_conv"
-       Src = @("src\conv2d\bench_conv.cu", "src\conv2d\conv.cu",
-               "src\matmul\matmul.cu", "src\common\reference.cu")
-       Inc = @("src\common", "src\matmul"); Libs = @() },
-    @{ Name = "debug_mm"
-       Src = @("src\matmul\debug_mm.cu", "src\matmul\matmul.cu", "src\common\reference.cu")
-       Inc = @("src\common"); Libs = @() },
-    @{ Name = "debug_conv"
-       Src = @("src\conv2d\debug_conv.cu", "src\conv2d\conv.cu",
-               "src\matmul\matmul.cu", "src\common\reference.cu")
-       Inc = @("src\common", "src\matmul"); Libs = @() },
-    @{ Name = "render_art"
-       Src = @("src\art\render_art.cu", "src\art\art_render.cu", "src\art\art_ref.cu",
-               "src\common\reference.cu")
-       Inc = @("src\common", "src\art"); Libs = @(); Flags = $ieeeFlags }
-)
+$srcArgs = (@("src\keenly.cu", "src\render.cu", "src\reference.cu") |
+            ForEach-Object { "`"$root\$_`"" }) -join " "
+$out = "`"$bin\keenly.exe`""
 
-foreach ($t in $targets) {
-    $srcArgs = ($t.Src | ForEach-Object { "`"$root\$_`"" }) -join " "
-    $incArgs = ($t.Inc | ForEach-Object { "-I`"$root\$_`"" }) -join " "
-    $libArgs = ($t.Libs -join " ")
-    $tflags = if ($t.Flags) { $t.Flags } else { $flags }
-    $out = "`"$bin\$($t.Name).exe`""
-
-    $cmd = "`"$vcvars`" >nul 2>&1 && nvcc $tflags $incArgs $srcArgs -o $out $libArgs"
-    Write-Host "Building $($t.Name) ..."
-    cmd /c $cmd
-    if ($LASTEXITCODE -ne 0) { Write-Error "Failed to build $($t.Name)"; exit $LASTEXITCODE }
-}
+Write-Host "Building keenly ..."
+$cmd = "`"$vcvars`" >nul 2>&1 && nvcc $flags -I`"$root\src`" $srcArgs -o $out"
+cmd /c $cmd
+if ($LASTEXITCODE -ne 0) { Write-Error "Failed to build keenly"; exit $LASTEXITCODE }
 
 Write-Host ""
 Write-Host "Build OK:"

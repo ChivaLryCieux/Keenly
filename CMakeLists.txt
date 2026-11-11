@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(NsightProgram LANGUAGES CXX CUDA)
+# Keenly - a CUDA generative art studio: procedural film-grain, frosted and
+# organic backgrounds, rendered as cinema frames and A1 posters.
+project(Keenly LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,14 +15,18 @@ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES 75)
 endif()
 
-# -lineinfo lets Nsight Compute correlate SASS back to source lines.
-# --use_fast_math is applied per target (matmul/conv targets only): the art
-# target compiles strict IEEE math so its CPU reference gate can demand
-# bit-exact GPU output. See src/art/CMakeLists.txt.
+# -lineinfo lets Nsight tools correlate SASS back to source lines.
+# NOTE: no --use_fast_math here on purpose. Keenly builds strict IEEE math
+# (--fmad=false below) so GPU renders are BIT-IDENTICAL to the CPU reference
+# and the verify gate can demand maxAbs == 0. Speed is not the bottleneck;
+# reproducibility is the product.
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 -lineinfo --expt-relaxed-constexpr")
 
-find_package(CUDAToolkit REQUIRED)
+add_executable(keenly
+    src/keenly.cu
+    src/render.cu
+    src/reference.cu
+)
 
-add_subdirectory(src/matmul)
-add_subdirectory(src/conv2d)
-add_subdirectory(src/art)
+target_include_directories(keenly PRIVATE src)
+target_compile_options(keenly PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>)
