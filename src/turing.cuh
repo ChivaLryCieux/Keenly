@@ -57,7 +57,12 @@ __host__ __device__ inline float turingInitB(int x, int y, int res, unsigned see
     for (int i = 0; i < 16; ++i) {
         const float cx = hash01(i, 11, seed) * R;
         const float cy = hash01(i, 29, seed) * R;
-        const float r = (0.012f + 0.018f * hash01(i, 47, seed)) * R;
+        // LATTICE units, NOT a fraction of res: Gray-Scott dynamics have a
+        // fixed intrinsic length in cells, so a seed that scales with the
+        // grid changes the regime (at 512 the old res-scaled blobs were too
+        // big for the spots regime to survive - measured: B decays to 0).
+        // Fixed-size seeds keep rdRes a pure pattern-density knob.
+        const float r = 3.0f + 5.0f * hash01(i, 47, seed);
         float dx = float(x) + 0.5f - cx;
         float dy = float(y) + 0.5f - cy;
         if (dx > 0.5f * R) dx -= R;
@@ -121,9 +126,12 @@ __host__ __device__ inline float sampleTuring(const float* tex, int res, float x
     const float bot = v01 + (v11 - v01) * wx;
     const float b = top + (bot - top) * wy;
 
-    // B is in ~[0, 0.4] on classic Gray-Scott; map to ~[-1, 1] around the
-    // midtone so the palette / contrast knobs behave like the noise fields.
-    const float raw = (0.20f - b) * 5.0f;
+    // Gray-Scott B sits in ~[0, 0.45], but its baseline differs per regime:
+    // spots live near 0 with hot nuclei, labyrinths run ~0.25 everywhere with
+    // thin empty channels. Centering at 0.18 with a 4.5 gain maps both to a
+    // healthy bipolar range: bright STRUCTURE on dark ground (the readable
+    // polarity for backgrounds and icon fields).
+    const float raw = (b - 0.18f) * 4.5f;
     return raw < -1.0f ? -1.0f : (raw > 1.0f ? 1.0f : raw);
 }
 
