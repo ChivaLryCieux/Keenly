@@ -238,7 +238,9 @@ static void applyIconFamily(keenly::IconParams& ip, const std::string& name)
 
     if (name == "blue") {
         applyPreset(ip.field, post, "ice", 0u);
-        ip.field.mode = kFieldFrost;
+        // Fluid backgrounds only (the organic warp field): the Worley
+        // frost/facet fields read as ugly Voronoi at icon size.
+        ip.field.mode = kFieldWarp;
         ip.field.view = 2.8f;
         ip.field.warp = 1.1f;
         ip.col.fill[0] = 0.10f;  ip.col.fill[1] = 0.30f;  ip.col.fill[2] = 0.75f;
@@ -258,7 +260,8 @@ static void applyIconFamily(keenly::IconParams& ip, const std::string& name)
         ip.col.shadow[0] = 0.24f; ip.col.shadow[1] = 0.02f; ip.col.shadow[2] = 0.01f;
     } else if (name == "gold") {
         applyPreset(ip.field, post, "gold", 0u);
-        ip.field.mode = kFieldFacet;
+        // Fluid background (warp), not the Voronoi facet field.
+        ip.field.mode = kFieldWarp;
         ip.field.view = 2.7f;
         ip.field.warp = 1.15f;
         ip.col.fill[0] = 0.92f;  ip.col.fill[1] = 0.62f;  ip.col.fill[2] = 0.12f;
