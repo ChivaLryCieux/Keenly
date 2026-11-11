@@ -21,18 +21,8 @@ __global__ void fieldKernel(float* rgb, int w, int h, FieldParams p)
 
 // ---- post chain (stage 2) --------------------------------------------------
 // Half-res bright pass, separable gaussian for the glow, then a per-pixel
-// compose: halation + film grain + vignette + ACES. All in linear light.
-
-__device__ float luminance(const float* c)
-{
-    return 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2];
-}
-
-__device__ float acesFilmic(float x)
-{
-    // Narkowicz ACES fit: cheap, stable, the standard "cinematic" curve.
-    return (x * (2.51f * x + 0.03f)) / (x * (2.43f * x + 0.59f) + 0.14f);
-}
+// compose: halation + the shared post tail (post.cuh: split-tone, grain,
+// vignette, ACES). All in linear light until the tail.
 
 // Box-average 2x2 -> half res, keep only what glows (soft knee above
 // threshold). This is the halation source: film highlights bleed red.
@@ -111,68 +101,14 @@ __global__ void composeKernel(float* out, const float* field, const float* glow,
     c[1] += g[1] * p.halation * 0.45f + g[1] * p.bloom;
     c[2] += g[2] * p.halation * 0.28f + g[2] * p.bloom;
 
-    // Split-tone grade (the real teal-orange mechanism, on top of the
-    // palette): shadows drift cool, highlights drift warm, and the extreme
-    // highlights desaturate toward neutral like film's shoulder does.
-    {
-        float L = luminance(c);
-        L = L < 0.0f ? 0.0f : (L > 1.0f ? 1.0f : L);
-        const float k = sstep(0.05f, 0.55f, L) * p.splitTone;
-        const float kh = sstep(0.75f, 1.25f, L) * p.splitTone;
-        c[0] *= 0.85f + 0.30f * k;
-        c[2] *= 1.15f - 0.30f * k;
-        // highlight desaturation: mix toward luminance by kh * 0.5
-        const float m = kh * 0.5f;
-        c[0] += (L - c[0]) * m;
-        c[1] += (L - c[1]) * m;
-        c[2] += (L - c[2]) * m;
-    }
+    // Shared per-pixel tail (post.cuh): split-tone -> vividness -> grain ->
+    // vignette -> ACES. Identical code path for stills and icons.
+    postTail(c, x, y, w, h, p, 1.0f);
 
-    // Vividness: expand chroma around luminance (film-style color
-    // enhancement). No-op on achromatic content. Keeps the palette alive
-    // when the macro-light layer darkens the frame.
-    {
-        const float Ls = luminance(c);
-        const float s = p.saturation - 1.0f;
-        c[0] += (c[0] - Ls) * s;
-        c[1] += (c[1] - Ls) * s;
-        c[2] += (c[2] - Ls) * s;
-    }
-
-    // Film grain: clumped at TWO scales (fine blobs + wide silver clumps)
-    // with per-channel fine components - real film has one grain layer per
-    // emulsion layer, so channels are slightly decorrelated. Amplitude is
-    // modulated by a film-like midtone response curve 4*L*(1-L): strongest
-    // in the midtones, invisible in blacks and whites.
-    const float L2 = luminance(c);
-    const float lc = L2 < 0.0f ? 0.0f : (L2 > 1.0f ? 1.0f : L2);
-    const float response = 4.0f * lc * (1.0f - lc);
-    const float blob = 0.6f * gradNoise2(float(x) / p.grainScale, float(y) / p.grainScale,
-                                         p.seed + 7717u)
-                     + 0.4f * gradNoise2(float(x) / (p.grainScale * 2.7f),
-                                         float(y) / (p.grainScale * 2.7f),
-                                         p.seed + 5501u);
-    const float fineR = hash01(x, y, p.seed + 9931u) * 2.0f - 1.0f;
-    const float fineG = hash01(x, y, p.seed + 13007u) * 2.0f - 1.0f;
-    const float fineB = hash01(x, y, p.seed + 16223u) * 2.0f - 1.0f;
-    const float amp = p.grain * response;
-    c[0] += amp * (0.70f * blob + 0.35f * fineR);
-    c[1] += amp * (0.70f * blob + 0.30f * fineG);
-    c[2] += amp * (0.70f * blob + 0.25f * fineB);
-
-    // Vignette: elliptical, follows the frame shape.
-    const float rx = (float(x) + 0.5f) / float(w) * 2.0f - 1.0f;
-    const float ry = (float(y) + 0.5f) / float(h) * 2.0f - 1.0f;
-    const float vig = 1.0f - p.vignette * sstep(0.30f, 1.20f, rx * rx + ry * ry);
-    c[0] *= vig;
-    c[1] *= vig;
-    c[2] *= vig;
-
-    // ACES tonemap per channel -> display-referred [0, 1].
     float* o = out + (size_t(y) * w + x) * 3;
-    o[0] = acesFilmic(c[0] < 0.0f ? 0.0f : c[0]);
-    o[1] = acesFilmic(c[1] < 0.0f ? 0.0f : c[1]);
-    o[2] = acesFilmic(c[2] < 0.0f ? 0.0f : c[2]);
+    o[0] = c[0];
+    o[1] = c[1];
+    o[2] = c[2];
 }
 
 }  // namespace

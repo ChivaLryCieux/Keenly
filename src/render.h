@@ -5,24 +5,13 @@
 // ASCII-ONLY FILE ON PURPOSE (see src/common/cuda_utils.h for the reason).
 
 #include "pixel.cuh"
+#include "post.cuh"
 
 namespace keenly
 {
 
-// Post-processing chain (stage 2): film grain, halation glow, vignette,
-// ACES tonemap. Applied in linear light on top of the field render.
-struct PostParams
-{
-    unsigned seed = 7u;
-    float exposure = 1.0f;    // linear exposure before tonemap
-    float grain = 0.05f;      // grain amplitude in linear light
-    float grainScale = 2.5f;  // grain clump size in pixels
-    float halation = 0.35f;   // reddish glow strength around highlights
-    float bloom = 0.12f;      // neutral glow strength
-    float vignette = 0.35f;   // corner darkening amount
-    float splitTone = 0.35f;  // teal shadows / warm highlights grade strength
-    float saturation = 1.12f; // chroma expansion around luminance (1 = off)
-};
+// Post-processing params (film grain, halation glow, vignette, ACES) live in
+// post.cuh together with the per-pixel post tail shared by stills and icons.
 
 // Render the field into an RGB float buffer on the device (row-major, 3
 // floats per pixel). Launch errors are fatal (CUDA_CHECK inside).
