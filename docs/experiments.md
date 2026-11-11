@@ -147,6 +147,22 @@ v3 是不同算子（0.469 GFLOP，FLOPs 少 7.9 倍），按等 FLOPs 折算基
 
 ---
 
+## E9 — art 模块：GPU vs CPU 门禁的舍入底噪（2026-11-11）
+
+**现象**：`render_art --check` 首跑 relL2 = 1.36e-05，超了我随手定的 1e-5 预算。
+
+**实验**：同一份代码，关掉 `--use_fast_math` 重测 → relL2 降到 6.15e-06。
+说明底噪来源是 fast-math 的近似除法 + FMA 收缩（host/device 编译路径不同），
+不是 bug——真实管线 bug 的量级在 1e-2 以上（见 E1/E3/E5）。
+
+**决定**：项目统一保留 fast-math，art 门禁预算定 **1e-4**：比底噪高 7 倍
+（不会误报），比真实 bug 低 100 倍（不会漏报）。
+
+**教训**：verify 门禁的阈值要由实测底噪和真实 bug 量级共同决定，不能拍脑袋。
+「relL2 必须是 0」在浮点世界是伪命题。
+
+---
+
 ## 待办实验
 
 - [ ] v3 用多个 accumulator fragment 打断 `mma_sync` 依赖链，看能否超过 v2
@@ -157,3 +173,5 @@ v3 是不同算子（0.469 GFLOP，FLOPs 少 7.9 倍），按等 FLOPs 折算基
 - [ ] CUDA Graph 合并 conv 的 kernel 启动开销
 - [ ] 用 `bench_conv 512 28 28 512 3 1 1` 找 v1/v2 的拐点
 - [ ] 用 `nsys` 的事件计时和 bench 的 CUDA event 计时交叉验证
+
+art 模块（生成艺术）的待办清单在 [art.md](art.md)。

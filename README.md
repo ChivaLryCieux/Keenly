@@ -23,6 +23,10 @@ src/conv2d/
   conv.h / .cu                 v0 naive / v1 smem halo / v2 im2col+GEMM / v3 深度可分离
   bench_conv.cu                基准 + 正确性校验
   debug_conv.cu                调试器：隔离 im2col / GEMM / bias
+src/art/
+  art_noise.cuh / art_pixel.cuh  状态无关噪声 + 像素着色（域扭曲/调色/浮雕光照）
+  art_render.h / .cu             field kernel + post 链（颗粒/halation/暗角/ACES）
+  png_writer.h / render_art.cu   零依赖 PNG 写出 + CLI + CPU 门禁
 scripts/
   build.ps1                    CMake + Ninja 构建（常规终端用）
   build_direct.ps1             直接调 nvcc 构建（沙箱内用，见下）
@@ -56,6 +60,10 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 # 调试器（定位数值错误用，比盯着代码看快得多）
 .\bin\debug_mm.exe    64 64 64 regtile
 .\bin\debug_conv.exe
+
+# 生成艺术：电影画幅 / A1 海报（详见 docs\art.md）
+.\bin\render_art.exe --preset cinema --width 2560 --height 1072 --out out\film_frame.png
+.\bin\render_art.exe --preset dusk   --width 2000 --height 2832 --out out\a1_poster.png
 ```
 
 **每次改动后跑这个**（回归门禁）：
@@ -167,6 +175,21 @@ powershell -ExecutionPolicy Bypass -File scripts\nsys_profile.ps1 `
 
 **练习节奏**：每改一版 → 跑 bench 看 GFLOP/s → `ncu` 看哪个指标动了 → 解释变化
 → 再改。把每次的指标抄下来，你会得到一张自己的优化曲线。
+
+---
+
+## 视觉艺术模块（src/art）
+
+把同一套「CPU 参考 + 门禁」的纪律用在生成艺术上：fBm 梯度噪声 → 二级域扭曲
+（有机流体感）→ 调色板 + 浮雕光照 → 后期链（胶片颗粒/halation/暗角/ACES）→
+8/16-bit PNG。每个像素是 `(x, y, seed)` 的纯函数——同 seed 复现、CPU/GPU 一致、
+为 A1 分块渲染留好口子。
+
+三个 preset：`cinema`（青橙电影画幅 + 聚团 35mm 颗粒）、`dusk`（靛蓝-品红-珊瑚
+海报 + 细磨砂颗粒）、`mono`。门禁和 bench 一样是硬错误（relL2 < 1e-4，实测
+fast-math 底噪 1.4e-5）。70MP 的 A1 300 DPI 全幅渲染 GPU 只要 219ms。
+
+完整文档、质感旋钮表、显存/分寸现实、后续路线：[docs/art.md](docs/art.md)。
 
 ---
 
