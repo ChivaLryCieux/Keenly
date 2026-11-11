@@ -15,7 +15,7 @@ struct PostParams
 {
     unsigned seed = 7u;
     float exposure = 1.0f;    // linear exposure before tonemap
-    float grain = 0.06f;      // grain amplitude in linear light
+    float grain = 0.05f;      // grain amplitude in linear light
     float grainScale = 2.5f;  // grain clump size in pixels
     float halation = 0.35f;   // reddish glow strength around highlights
     float bloom = 0.12f;      // neutral glow strength

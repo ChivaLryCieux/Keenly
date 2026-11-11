@@ -23,14 +23,31 @@ struct Crc32
 {
     uint32_t state = 0xFFFFFFFFu;
 
+    // Standard reflected CRC32 table (poly 0xEDB88320), built once on first
+    // use. Table-driven keeps full-size poster exports (hundreds of MB of
+    // scanline data) from spending seconds in a bitwise loop.
+    static const uint32_t* table()
+    {
+        static uint32_t t[256];
+        static bool ready = false;
+        if (!ready) {
+            for (uint32_t i = 0; i < 256; ++i) {
+                uint32_t c = i;
+                for (int k = 0; k < 8; ++k)
+                    c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1u)));
+                t[i] = c;
+            }
+            ready = true;
+        }
+        return t;
+    }
+
     void update(const uint8_t* data, size_t n)
     {
+        const uint32_t* t = table();
         uint32_t c = state;
-        for (size_t i = 0; i < n; ++i) {
-            c ^= data[i];
-            for (int k = 0; k < 8; ++k)
-                c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1u)));
-        }
+        for (size_t i = 0; i < n; ++i)
+            c = t[(c ^ data[i]) & 0xFFu] ^ (c >> 8);
         state = c;
     }
 
