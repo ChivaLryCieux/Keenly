@@ -50,3 +50,34 @@ private:
     cudaEvent_t start_{};
     cudaEvent_t stop_{};
 };
+
+// RAII device buffer that grows on demand and keeps the allocation between
+// renders. Batch runs (icon sheets, showcase grids) reuse one buffer per
+// slot instead of paying cudaMalloc/cudaFree churn per item - each
+// cudaMalloc is milliseconds on WDDM, and a batch does hundreds of them.
+class GpuBuffer
+{
+public:
+    GpuBuffer() = default;
+    ~GpuBuffer()
+    {
+        if (ptr_) cudaFree(ptr_);
+    }
+    GpuBuffer(const GpuBuffer&) = delete;
+    GpuBuffer& operator=(const GpuBuffer&) = delete;
+
+    // Device pointer with room for at least n floats; grows monotonically.
+    float* ensure(size_t n)
+    {
+        if (n > count_) {
+            if (ptr_) CUDA_CHECK(cudaFree(ptr_));
+            CUDA_CHECK(cudaMalloc(&ptr_, n * sizeof(float)));
+            count_ = n;
+        }
+        return ptr_;
+    }
+
+private:
+    float* ptr_ = nullptr;
+    size_t count_ = 0;
+};

@@ -736,6 +736,7 @@ static int runGrid(const Args& args)
     const int gw = 3 * tile + 4 * gap;
     std::vector<float> img(size_t(gw) * size_t(gw) * 3, 0.018f);  // gap background
     std::vector<float> cellImg(size_t(tile) * size_t(tile) * 3);
+    GpuBuffer fieldBuf, outBuf;  // reused across all nine cells
 
     for (int i = 0; i < 9; ++i) {
         keenly::FieldParams f;
@@ -757,15 +758,12 @@ static int runGrid(const Args& args)
         }
 
         const size_t n = size_t(tile) * size_t(tile) * 3;
-        float *dField = nullptr, *dOut = nullptr;
-        CUDA_CHECK(cudaMalloc(&dField, n * sizeof(float)));
-        CUDA_CHECK(cudaMalloc(&dOut, n * sizeof(float)));
+        float* dField = fieldBuf.ensure(n);
+        float* dOut = outBuf.ensure(n);
         keenly::renderFieldGpu(dField, tile, tile, f);
         keenly::renderPostGpu(dOut, dField, tile, tile, p);
         CUDA_CHECK(cudaMemcpy(cellImg.data(), dOut, n * sizeof(float),
                               cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaFree(dField));
-        CUDA_CHECK(cudaFree(dOut));
 
         const int cx = gap + (i % 3) * (tile + gap);
         const int cy = gap + (i / 3) * (tile + gap);
@@ -817,6 +815,24 @@ static bool runIconCheck(const keenly::IconParams& p)
     return d.maxAbs == 0.0;
 }
 
+// Render one RGBA icon into host memory through a reusable device scratch
+// buffer. Batch runs call this repeatedly with the same GpuBuffer, so the
+// device allocation happens once per batch instead of once per icon.
+// Returns the GPU render time in ms.
+static float renderIconToHost(const keenly::IconParams& p, int w, int h,
+                              std::vector<float>& host, GpuBuffer& scratch)
+{
+    const size_t n = size_t(w) * size_t(h) * 4;
+    host.resize(n);
+    float* dBuf = scratch.ensure(n);
+    GpuTimer timer;
+    timer.start();
+    keenly::renderIconGpu(dBuf, w, h, p);
+    const float ms = timer.stop();
+    CUDA_CHECK(cudaMemcpy(host.data(), dBuf, n * sizeof(float), cudaMemcpyDeviceToHost));
+    return ms;
+}
+
 static bool renderOneIcon(const Args& args, const keenly::IconParams& p,
                           int w, int h, const std::string& path)
 {
@@ -824,17 +840,9 @@ static bool renderOneIcon(const Args& args, const keenly::IconParams& p,
         std::fprintf(stderr, "ICON CHECK FAILED: GPU disagrees with the CPU reference\n");
         return false;
     }
-    const size_t n = size_t(w) * size_t(h) * 4;
-    std::vector<float> img(n);
-    float* dBuf = nullptr;
-    CUDA_CHECK(cudaMalloc(&dBuf, n * sizeof(float)));
-
-    GpuTimer timer;
-    timer.start();
-    keenly::renderIconGpu(dBuf, w, h, p);
-    const float ms = timer.stop();
-    CUDA_CHECK(cudaMemcpy(img.data(), dBuf, n * sizeof(float), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaFree(dBuf));
+    GpuBuffer scratch;
+    std::vector<float> img;
+    const float ms = renderIconToHost(p, w, h, img, scratch);
 
     if (!writeImageRgba(path, w, h, img.data())) {
         std::fprintf(stderr, "failed to write %s\n", path.c_str());
@@ -889,6 +897,13 @@ static int runIconsDemo(const Args& args)
         const int sh = rows * kTile + (rows + 1) * gap;
         std::vector<float> sheet(size_t(sw) * size_t(sh) * 3, 0.030f);
 
+        // Per family: the bit-exact gate runs on the first glyph (params vary
+        // per glyph only by seed and glyph id, one gate per family covers the
+        // code paths), then every glyph renders through ONE reused scratch
+        // buffer. Each 128px icon is rendered once and feeds both its PNG and
+        // the contact sheet - the old code rendered it twice.
+        GpuBuffer scratch;
+        std::vector<float> icon, thumb;
         for (int g = 0; g < keenly::kGlyphCount; ++g) {
             keenly::IconParams ip;
             applyIconFamily(ip, kFamilies[f]);
@@ -899,49 +914,40 @@ static int runIconsDemo(const Args& args)
             ip.field.seed = 7u + unsigned(g) * 13u;
             ip.post.seed = ip.field.seed;
 
-            // full-size RGBA icon (runs the gate once per icon)
+            if (g == 0 && args.check && !runIconCheck(ip)) {
+                std::fprintf(stderr, "ICON CHECK FAILED on family %s\n", kFamilies[f]);
+                allOk = false;
+            }
+
             char name[128];
             std::snprintf(name, sizeof(name), "%s/%s_%s.png", kFamilies[f],
                           kFamilies[f], keenly::glyphName(g));
-            if (!renderOneIcon(args, ip, kTile, kTile, root + "/" + name))
+            const float ms128 = renderIconToHost(ip, kTile, kTile, icon, scratch);
+            if (!writeImageRgba(root + "/" + name, kTile, kTile, icon.data())) {
+                std::fprintf(stderr, "failed to write %s\n", name);
                 allOk = false;
+            }
 
-            // 64px thumbnail (same params, no gate re-run)
             std::snprintf(name, sizeof(name), "%s/thumbs/%s_%s_64.png", kFamilies[f],
                           kFamilies[f], keenly::glyphName(g));
-            {
-                const size_t n = size_t(kThumb) * size_t(kThumb) * 4;
-                std::vector<float> img(n);
-                float* dBuf = nullptr;
-                CUDA_CHECK(cudaMalloc(&dBuf, n * sizeof(float)));
-                keenly::renderIconGpu(dBuf, kThumb, kThumb, ip);
-                CUDA_CHECK(cudaMemcpy(img.data(), dBuf, n * sizeof(float),
-                                      cudaMemcpyDeviceToHost));
-                CUDA_CHECK(cudaFree(dBuf));
-                if (!writeImageRgba(root + "/" + name, kThumb, kThumb, img.data())) {
-                    std::fprintf(stderr, "failed to write %s\n", name);
-                    allOk = false;
-                }
+            const float ms64 = renderIconToHost(ip, kThumb, kThumb, thumb, scratch);
+            if (!writeImageRgba(root + "/" + name, kThumb, kThumb, thumb.data())) {
+                std::fprintf(stderr, "failed to write %s\n", name);
+                allOk = false;
             }
+            std::printf("glyph  : %-6s %-8s 128px %5.2f ms  64px %4.2f ms\n",
+                        kFamilies[f], keenly::glyphName(g), ms128, ms64);
 
             // paste the 128px icon onto the contact sheet (alpha over dark)
             const int cx = gap + (g % cols) * (kTile + gap);
             const int cy = gap + (g / cols) * (kTile + gap);
-            const size_t n = size_t(kTile) * size_t(kTile) * 4;
-            std::vector<float> cell(n);
-            float* dBuf = nullptr;
-            CUDA_CHECK(cudaMalloc(&dBuf, n * sizeof(float)));
-            keenly::renderIconGpu(dBuf, kTile, kTile, ip);
-            CUDA_CHECK(cudaMemcpy(cell.data(), dBuf, n * sizeof(float),
-                                  cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaFree(dBuf));
             for (int y = 0; y < kTile; ++y) {
                 for (int x = 0; x < kTile; ++x) {
                     const size_t ci = (size_t(y) * kTile + x) * 4;
-                    const float a = cell[ci + 3];
+                    const float a = icon[ci + 3];
                     float* s = &sheet[(size_t(cy + y) * sw + cx + x) * 3];
                     for (int c = 0; c < 3; ++c)
-                        s[c] = cell[ci + c] * a + 0.030f * (1.0f - a);
+                        s[c] = icon[ci + c] * a + 0.030f * (1.0f - a);
                 }
             }
         }
@@ -963,6 +969,8 @@ static int runIconsDemo(const Args& args)
         const int t = 256, gap = 16;
         const int sw = 4 * t + 5 * gap;
         std::vector<float> sheet(size_t(sw) * size_t(sw) * 3, 0.030f);
+        GpuBuffer scratch;
+        std::vector<float> cell;
         for (int tier = 1; tier <= 4; ++tier) {
             keenly::IconParams ip;
             applyIconFamily(ip, "gold");
@@ -970,14 +978,7 @@ static int runIconsDemo(const Args& args)
             ip.tier = tier;
             ip.roundedMask = 1;
             ip.radius = 0.16f;
-            const size_t n = size_t(t) * size_t(t) * 4;
-            std::vector<float> cell(n);
-            float* dBuf = nullptr;
-            CUDA_CHECK(cudaMalloc(&dBuf, n * sizeof(float)));
-            keenly::renderIconGpu(dBuf, t, t, ip);
-            CUDA_CHECK(cudaMemcpy(cell.data(), dBuf, n * sizeof(float),
-                                  cudaMemcpyDeviceToHost));
-            CUDA_CHECK(cudaFree(dBuf));
+            renderIconToHost(ip, t, t, cell, scratch);
             const int cx = gap + (tier - 1) * (t + gap);
             for (int y = 0; y < t; ++y) {
                 for (int x = 0; x < t; ++x) {
