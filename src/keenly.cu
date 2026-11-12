@@ -11,12 +11,15 @@
 // (transcendental, fast-math division, FMA contraction) has slipped into
 // art_noise/art_pixel and reproducibility is gone.
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <cuda_runtime.h>
@@ -298,9 +301,36 @@ static inline float tpdfDither(uint32_t idx, float step)
     return (r1 - r2) * step;
 }
 
+// Split an index range across worker threads. The encode loops are pure
+// per-sample functions (srgbEncode + tpdfDither(i) + quantize), so any chunk
+// split produces byte-identical output - this is a wall-clock win only.
+// Small ranges run inline: thread launch would cost more than the work.
+template <class F>
+static void parallelFor(size_t n, F fn)
+{
+    unsigned tc = std::thread::hardware_concurrency();
+    if (tc == 0) tc = 1;
+    if (tc > 16) tc = 16;
+    if (tc == 1 || n < 262144) {
+        fn(size_t(0), n);
+        return;
+    }
+    std::vector<std::thread> ts;
+    const size_t chunk = (n + tc - 1) / tc;
+    for (unsigned t = 0; t < tc; ++t) {
+        const size_t lo = size_t(t) * chunk;
+        const size_t hi = std::min(n, lo + chunk);
+        if (lo >= hi) break;
+        ts.emplace_back([=] { fn(lo, hi); });
+    }
+    for (auto& th : ts) th.join();
+}
+
 // Linear RGB buffer -> PNG (sRGB encode + TPDF dither + quantize).
+// Encodes in parallel across CPU cores; output bytes are identical to the
+// old serial loop (per-sample pure math, deterministic LCG dither).
 static bool writeImage(const std::string& path, int w, int h, int depth,
-                       const std::vector<float>& linear)
+                       const float* linear)
 {
     std::error_code ec;
     std::filesystem::path outPath(path);
@@ -310,27 +340,32 @@ static bool writeImage(const std::string& path, int w, int h, int depth,
     const size_t n = size_t(w) * size_t(h) * 3;
     if (depth == 16) {
         std::vector<uint16_t> img(n);
-        for (size_t i = 0; i < n; ++i) {
-            float v = srgbEncode(linear[i]) + tpdfDither(uint32_t(i), 1.0f / 65535.0f);
-            v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
-            img[i] = uint16_t(v * 65535.0f + 0.5f);
-        }
+        parallelFor(n, [&](size_t lo, size_t hi) {
+            for (size_t i = lo; i < hi; ++i) {
+                float v = srgbEncode(linear[i]) + tpdfDither(uint32_t(i), 1.0f / 65535.0f);
+                v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+                img[i] = uint16_t(v * 65535.0f + 0.5f);
+            }
+        });
         return keenly::writePng(path, w, h, 16, img.data());
     }
     std::vector<uint8_t> img(n);
-    for (size_t i = 0; i < n; ++i) {
-        float v = srgbEncode(linear[i]) + tpdfDither(uint32_t(i), 1.0f / 255.0f);
-        v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
-        img[i] = uint8_t(v * 255.0f + 0.5f);
-    }
+    parallelFor(n, [&](size_t lo, size_t hi) {
+        for (size_t i = lo; i < hi; ++i) {
+            float v = srgbEncode(linear[i]) + tpdfDither(uint32_t(i), 1.0f / 255.0f);
+            v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+            img[i] = uint8_t(v * 255.0f + 0.5f);
+        }
+    });
     return keenly::writePng(path, w, h, 8, img.data());
 }
 
 // RGBA float buffer -> PNG (sRGB on color, straight quantize on alpha).
 // Alpha is a coverage mask, not a color: no dither there, so icon edges
-// stay clean after engine compositing.
+// stay clean after engine compositing. Chunks are per-pixel (i += 4), so the
+// parallel split keeps alpha with its pixel.
 static bool writeImageRgba(const std::string& path, int w, int h,
-                           const std::vector<float>& linear)
+                           const float* linear)
 {
     std::error_code ec;
     std::filesystem::path outPath(path);
@@ -339,14 +374,17 @@ static bool writeImageRgba(const std::string& path, int w, int h,
 
     const size_t n = size_t(w) * size_t(h) * 4;
     std::vector<uint8_t> img(n);
-    for (size_t i = 0; i < n; i += 4) {
-        img[i + 0] = uint8_t(srgbEncode(linear[i + 0]) * 255.0f + 0.5f);
-        img[i + 1] = uint8_t(srgbEncode(linear[i + 1]) * 255.0f + 0.5f);
-        img[i + 2] = uint8_t(srgbEncode(linear[i + 2]) * 255.0f + 0.5f);
-        float a = linear[i + 3];
-        a = a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
-        img[i + 3] = uint8_t(a * 255.0f + 0.5f);
-    }
+    parallelFor(n / 4, [&](size_t lo, size_t hi) {
+        for (size_t pix = lo; pix < hi; ++pix) {
+            const size_t i = pix * 4;
+            img[i + 0] = uint8_t(srgbEncode(linear[i + 0]) * 255.0f + 0.5f);
+            img[i + 1] = uint8_t(srgbEncode(linear[i + 1]) * 255.0f + 0.5f);
+            img[i + 2] = uint8_t(srgbEncode(linear[i + 2]) * 255.0f + 0.5f);
+            float a = linear[i + 3];
+            a = a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
+            img[i + 3] = uint8_t(a * 255.0f + 0.5f);
+        }
+    });
     return keenly::writePng(path, w, h, 8, img.data(), 4);
 }
 
@@ -737,7 +775,7 @@ static int runGrid(const Args& args)
                         size_t(tile) * 3 * sizeof(float));
     }
 
-    if (!writeImage(args.grid, gw, gw, args.depth, img)) {
+    if (!writeImage(args.grid, gw, gw, args.depth, img.data())) {
         std::fprintf(stderr, "failed to write %s\n", args.grid.c_str());
         return 1;
     }
@@ -798,7 +836,7 @@ static bool renderOneIcon(const Args& args, const keenly::IconParams& p,
     CUDA_CHECK(cudaMemcpy(img.data(), dBuf, n * sizeof(float), cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaFree(dBuf));
 
-    if (!writeImageRgba(path, w, h, img)) {
+    if (!writeImageRgba(path, w, h, img.data())) {
         std::fprintf(stderr, "failed to write %s\n", path.c_str());
         return false;
     }
@@ -880,7 +918,7 @@ static int runIconsDemo(const Args& args)
                 CUDA_CHECK(cudaMemcpy(img.data(), dBuf, n * sizeof(float),
                                       cudaMemcpyDeviceToHost));
                 CUDA_CHECK(cudaFree(dBuf));
-                if (!writeImageRgba(root + "/" + name, kThumb, kThumb, img)) {
+                if (!writeImageRgba(root + "/" + name, kThumb, kThumb, img.data())) {
                     std::fprintf(stderr, "failed to write %s\n", name);
                     allOk = false;
                 }
@@ -911,7 +949,7 @@ static int runIconsDemo(const Args& args)
         char sheetName[128];
         std::snprintf(sheetName, sizeof(sheetName), "%s/sheet_%s.png",
                       kFamilies[f], kFamilies[f]);
-        if (!writeImage(root + "/" + sheetName, sw, sh, 8, sheet)) {
+        if (!writeImage(root + "/" + sheetName, sw, sh, 8, sheet.data())) {
             std::fprintf(stderr, "failed to write %s\n", sheetName);
             allOk = false;
         } else {
@@ -951,7 +989,7 @@ static int runIconsDemo(const Args& args)
                 }
             }
         }
-        if (!writeImage(root + "/sheet_tiers.png", sw, sw, 8, sheet)) {
+        if (!writeImage(root + "/sheet_tiers.png", sw, sw, 8, sheet.data())) {
             std::fprintf(stderr, "failed to write sheet_tiers.png\n");
             allOk = false;
         } else {
@@ -1007,7 +1045,10 @@ int main(int argc, char** argv)
     const float msField = timer.stop();
     std::printf("field  : %.3f ms  (%.1f Mpixel/s)\n", msField, pixels / (double(msField) * 1e3));
 
-    std::vector<float> hRgb(pixels * 3);
+    // Pinned host buffer: the multi-hundred-MB D2H at poster sizes runs at
+    // full PCIe bandwidth instead of pageable memory's ~2-4GB/s.
+    float* hRgb = nullptr;
+    CUDA_CHECK(cudaMallocHost(&hRgb, pixels * 3 * sizeof(float)));
     if (args.post) {
         keenly::PostParams post = args.postp;
         post.seed = args.field.seed;  // one seed per image: grain rerolls per seed
@@ -1019,19 +1060,26 @@ int main(int argc, char** argv)
         std::printf("post   : %.3f ms  (grain %.3f  halation %.2f  bloom %.2f  vignette %.2f  split %.2f)\n",
                     msPost, post.grain, post.halation, post.bloom, post.vignette,
                     post.splitTone);
-        CUDA_CHECK(cudaMemcpy(hRgb.data(), dOut, pixels * 3 * sizeof(float),
+        CUDA_CHECK(cudaMemcpy(hRgb, dOut, pixels * 3 * sizeof(float),
                               cudaMemcpyDeviceToHost));
         CUDA_CHECK(cudaFree(dOut));
     } else {
-        CUDA_CHECK(cudaMemcpy(hRgb.data(), dField, pixels * 3 * sizeof(float),
+        CUDA_CHECK(cudaMemcpy(hRgb, dField, pixels * 3 * sizeof(float),
                               cudaMemcpyDeviceToHost));
     }
     CUDA_CHECK(cudaFree(dField));
 
-    if (!writeImage(args.out, args.width, args.height, args.depth, hRgb)) {
+    // Encode + PNG write is a CPU stage; time it with the wall clock.
+    const auto tWrite = std::chrono::steady_clock::now();
+    const bool wrote = writeImage(args.out, args.width, args.height, args.depth, hRgb);
+    const auto tDone = std::chrono::steady_clock::now();
+    CUDA_CHECK(cudaFreeHost(hRgb));
+    if (!wrote) {
         std::fprintf(stderr, "failed to write %s\n", args.out.c_str());
         return 1;
     }
+    const float msWrite = std::chrono::duration<float, std::milli>(tDone - tWrite).count();
+    std::printf("write  : %.3f ms  (sRGB encode + dither + stream to disk)\n", msWrite);
     std::printf("wrote  : %s  (%d-bit)\n", args.out.c_str(), args.depth);
     return 0;
 }

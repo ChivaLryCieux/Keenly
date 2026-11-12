@@ -131,6 +131,30 @@ Gray-Scott 动力学的内禀长度是格子单位——大块 B=1 种子在斑�
 
 ---
 
+## 8 — encode 链并行化 + pinned D2H：写出阶段 2.7x（2026-11-12）
+
+**改动**：(1) writeImage 的 sRGB+dither+量化从串行循环改为按索引区间
+多线程（逐样本纯函数 + 确定性 LCG 抖动，任何切分方式输出字节不变）；
+(2) 主渲染路径的大块 D2H 用 pinned 内存（cudaMallocHost）；(3) 写出阶段
+单独计时（wall clock，CPU 工作不用 GpuTimer）。
+
+**实测**（4000x5664 16-bit = 22.6MP / 6800 万样本，热态 A/B 各两遍）：
+整体 1.8~2.0s -> 0.96s（2x）；写出阶段（encode + CRC/adler + 落盘）
+~1.5s -> 0.55s（2.7x）。分解：field 164ms、post 9.5ms、write 548ms——
+encode 里的每样本一次 `std::pow` 是曾经的大头，现在 write 里剩的是
+CRC32/adler32 两遍全帧串行扫描 + 135MB fwrite。
+
+**决定**：不把 encode 搬去 GPU。`std::pow` 是超越函数，设备侧 powf 只有
+2 ulp 精度，GPU encode 会让 PNG 字节随显卡型号漂移（±1 LSB）——渲染
+浮点仍然位级全等，但「同 seed 同图」会从逐字节降级为视觉级。项目卖点
+是可复现，2x 不值得。
+
+**教训**：并行化不改变结果的条件是**逐样本纯函数**——tpdfDither 用
+(i) 的确定性 LCG 而不是线程局部 RNG，切分才安全。给 RNG 换线程局部
+状态的那一刻，输出就开始依赖线程数了。
+
+---
+
 ## 待办实验
 
 - [ ] tile + halo 分块渲染，打通 A1 600 DPI（显存 3.35GB/buffer 超 8GB 卡）
