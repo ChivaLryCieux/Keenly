@@ -1,7 +1,7 @@
 #pragma once
 // Stateless noise math for the art pipeline.
 //
-// ASCII-ONLY FILE ON PURPOSE (see src/common/cuda_utils.h for the reason).
+// ASCII-ONLY FILE ON PURPOSE (see src/cuda_utils.h for the reason).
 //
 // Every function is a pure function of integer coordinates + seed:
 //   - deterministic: same seed -> same picture, on CPU and GPU alike,

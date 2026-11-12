@@ -1,6 +1,6 @@
 // GPU kernels for the art pipeline.
 //
-// ASCII-ONLY FILE ON PURPOSE (see src/common/cuda_utils.h for the reason).
+// ASCII-ONLY FILE ON PURPOSE (see src/cuda_utils.h for the reason).
 
 #include "render.h"
 #include "cuda_utils.h"

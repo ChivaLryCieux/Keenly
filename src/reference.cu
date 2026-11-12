@@ -1,6 +1,6 @@
 // CPU reference implementation of the art pipeline.
 //
-// ASCII-ONLY FILE ON PURPOSE (see src/common/cuda_utils.h for the reason).
+// ASCII-ONLY FILE ON PURPOSE (see src/cuda_utils.h for the reason).
 //
 // Same fieldPixel() as the GPU kernel, plain serial loops. Comparing the two
 // buffers catches kernel plumbing bugs (indexing, swapped params, launch

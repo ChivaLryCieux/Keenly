@@ -1,7 +1,7 @@
 #pragma once
 // Gray-Scott reaction-diffusion ("Turing patterns") simulation core.
 //
-// ASCII-ONLY FILE ON PURPOSE (see src/common/cuda_utils.h for the reason).
+// ASCII-ONLY FILE ON PURPOSE (see src/cuda_utils.h for the reason).
 //
 // Unlike the noise fields, a Turing pattern is ITERATIVE grid state, not a
 // closed-form function of (x, y). Determinism is preserved by construction:

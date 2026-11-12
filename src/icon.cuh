@@ -1,7 +1,7 @@
 #pragma once
 // The icon compositor: one stateless function mapping (x, y, params) -> RGBA.
 //
-// ASCII-ONLY FILE ON PURPOSE (see src/common/cuda_utils.h for the reason).
+// ASCII-ONLY FILE ON PURPOSE (see src/cuda_utils.h for the reason).
 //
 // Layer order, all in LINEAR light (tonemap happens in the shared post tail):
 //   1. background  = fieldPixel (the art pipeline), dimmed for contrast

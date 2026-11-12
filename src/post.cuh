@@ -2,7 +2,7 @@
 // Per-pixel post tail, shared by the still pipeline (render.cu composeKernel)
 // and the icon compositor (icon.cuh).
 //
-// ASCII-ONLY FILE ON PURPOSE (see src/common/cuda_utils.h for the reason).
+// ASCII-ONLY FILE ON PURPOSE (see src/cuda_utils.h for the reason).
 //
 // Everything here is a pure function of (x, y, seed): strictly IEEE math only
 // (polynomials, no transcendentals), so GPU and CPU stay bit-identical and

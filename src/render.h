@@ -2,7 +2,7 @@
 // Art pipeline entry points: GPU renderers and the CPU reference used by the
 // verify gate. All art math lives in pixel.cuh / noise.cuh.
 //
-// ASCII-ONLY FILE ON PURPOSE (see src/common/cuda_utils.h for the reason).
+// ASCII-ONLY FILE ON PURPOSE (see src/cuda_utils.h for the reason).
 
 #include "pixel.cuh"
 #include "post.cuh"

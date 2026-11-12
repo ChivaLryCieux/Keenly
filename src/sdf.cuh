@@ -1,7 +1,7 @@
 #pragma once
 // 2D signed-distance primitives + the skill-icon glyph library.
 //
-// ASCII-ONLY FILE ON PURPOSE (see src/common/cuda_utils.h for the reason).
+// ASCII-ONLY FILE ON PURPOSE (see src/cuda_utils.h for the reason).
 //
 // Bit-level discipline: every function is a pure function of its arguments
 // built from +, -, *, /, sqrtf and comparisons only. Division and sqrt are

@@ -38,8 +38,8 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1          # CMake + Ni
 powershell -ExecutionPolicy Bypass -File scripts\verify.ps1
 ```
 
-A1 300 DPI 印刷母版：`--width 7014 --height 9933`（7000 万像素，
-GPU 渲染约 0.4 秒；瓶颈在 PNG 写盘）。
+A1 300 DPI 印刷母版：`--width 7014 --height 9933`（7000 万像素，全链约
+1.3 秒：GPU 渲染 0.4s + 编码/写盘 0.9s）。
 
 ---
 
@@ -67,6 +67,8 @@ scripts/
   build.ps1 / build_direct.ps1   两种构建路径
   verify.ps1                      回归门禁（构建 + 位级门禁 + 冒烟渲染）
   icon_stats.py                   图标质检（对比度/值域/64px 可读性）
+tools/
+  grid_stats.py / comp_stats.py / validate_rd.py   分析脚本（见 tools/README.md）
 ```
 
 **数据流**（详见 [docs/pipeline.md](docs/pipeline.md)）：
@@ -138,8 +140,8 @@ preset 附带各自的颗粒/光晕默认值，CLI 显式参数优先。
 
 **位级门禁**。Keenly 用严格 IEEE 数学编译（`--fmad=false`，不加 fast-math），
 所以 GPU 渲染与 CPU 参考逐位一致——`keenly --check-all` 对全部 8 个生成器
-（含 Gray-Scott 迭代模拟）要求 `maxAbs == 0`，图标合成路径同样逐张过门禁，
-`scripts\verify.ps1` 每次改动后跑。这不是过度工程：
+（含 Gray-Scott 迭代模拟）要求 `maxAbs == 0`，图标合成路径同样过门禁
+（单张逐张；demo 批量按色系抽样），`scripts\verify.ps1` 每次改动后跑。这不是过度工程：
 它同时保证了 seed 系列的可复现性、未来分块渲染的无缝性、印刷母版的可重渲性。
 历史教训（实验 1/2/3）都写在 [docs/experiments.md](docs/experiments.md) 里——
 fast-math 的误差预算模型被 bands 的 fold 增益（126 倍）击穿后，才换成零误差的编译约定。
@@ -153,16 +155,18 @@ ping-pong**（每格只读上一帧）保持同样的确定性。这是「换 se
 舍入底噪随链长增长、fold 的结构性增益、直方图形状判据（值域塌缩 vs 双峰）、
 迭代模拟的种子尺度语义（实验 5/6）。
 
-## 性能（RTX 2080 SUPER）
+## 性能（RTX 2080 SUPER，健康时钟实测）
 
-| 输出 | 尺寸 | field | post |
-|---|---|---|---|
-| 电影画幅 | 2560×1072 | ~36 ms | ~1.5 ms |
-| A1 300 DPI | 7014×9933（70MP） | ~354 ms | ~24 ms |
-| 图灵斑海报 | 2000×2832 | ~100 ms（含 512²×6000 步模拟） | ~2.5 ms |
-| 技能图标 | 128×128 RGBA | **~0.1 ms**（单 kernel 含后期） | 同左 |
+| 输出 | 尺寸 | field | post | write |
+|---|---|---|---|---|
+| 电影画幅 | 2560×1072 | ~40 ms | ~1.3 ms | ~66 ms |
+| A1 300 DPI | 7014×9933（70MP） | ~395 ms | ~25 ms | ~0.9 s |
+| 图灵斑海报 | 2000×2832 | ~95 ms（含 512²×6000 步模拟） | ~2.5 ms | ~136 ms |
+| 技能图标 | 128×128 RGBA | **~0.1 ms**（单 kernel 含后期） | 同左 | ~1 ms |
 
-渲染不是瓶颈，PNG 写盘是（当前 stored DEFLATE，零依赖零压缩）。
+write = sRGB 编码 + dither + 流式落盘（多线程）。渲染不是瓶颈，写出链
+次之；文件体积仍是 stored DEFLATE（零依赖零压缩）。注意 GPU 降频能把
+所有数字放大 10 倍以上，A/B 要热态交替采样（见实验 9）。
 
 ---
 

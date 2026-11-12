@@ -1,7 +1,7 @@
 #pragma once
 // The pixel shader: one stateless function mapping (x, y, params) -> RGB.
 //
-// ASCII-ONLY FILE ON PURPOSE (see src/common/cuda_utils.h for the reason).
+// ASCII-ONLY FILE ON PURPOSE (see src/cuda_utils.h for the reason).
 //
 // This is the single source of truth for the art math. The GPU kernel
 // (render.cu) and the CPU reference (reference.cu) both call fieldPixel(),

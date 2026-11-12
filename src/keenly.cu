@@ -1,7 +1,7 @@
 // Art pipeline driver: renders generative art backgrounds on the GPU and
 // writes PNG stills.
 //
-// ASCII-ONLY FILE ON PURPOSE (see src/common/cuda_utils.h for the reason).
+// ASCII-ONLY FILE ON PURPOSE (see src/cuda_utils.h for the reason).
 //
 // Every render runs the verify gate first (unless --no-check): the same
 // pixel shader executes on CPU and GPU and the two buffers must be
@@ -9,7 +9,7 @@
 // (--fmad=false, no fast-math) precisely so this holds: measured relL2 = 0
 // for every field mode. If the gate ever fires, a non-IEEE operation
 // (transcendental, fast-math division, FMA contraction) has slipped into
-// art_noise/art_pixel and reproducibility is gone.
+// art math (noise.cuh / pixel.cuh) and reproducibility is gone.
 
 #include <algorithm>
 #include <chrono>

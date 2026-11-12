@@ -39,7 +39,7 @@ src/
   pixel.cuh      调色板、分层构图、7 个场生成器（GPU/CPU 共享的像素着色）
   render.h/.cu   field kernel + post 链（bright/blur/compose）
   reference.cu   CPU 参考（串行遍历，同 pixel shader）
-  png_writer.h   零依赖 PNG 写出（RGB 8/16-bit，stored DEFLATE）
+  png_writer.h   零依赖流式 PNG 写出（RGB 8/16-bit，stored DEFLATE）
   compare.h      DiffStats / compareArrays（门禁比较）
   cuda_utils.h   CUDA_CHECK + GpuTimer
 ```
@@ -103,7 +103,7 @@ liquid 宽高光 + 白 glint、facet 硬闪、frost 微闪点。
 - **环绕边界**（wrapi）：网格可平铺，无边缘伪影；
 - 初始化是 `(x, y, res, seed)` 的纯函数（hash 种子斑点），换 seed 换构图。
 
-模拟每图跑一次（GPU ~1.5s @512²×6000 步），之后像素着色器用五次方平滑
+模拟每图跑一次（GPU ~0.1s @512²×6000 步），之后像素着色器用五次方平滑
 双线性（quintic bilinear）采样 B 网格——C2 连续，浮雕着色下无双线性折痕。
 
 Gray-Scott 参数 `--rd-f`（feed）/ `--rd-k`（kill）决定形态（Pearson 形态图）：
@@ -163,14 +163,17 @@ Gray-Scott 参数 `--rd-f`（feed）/ `--rd-k`（kill）决定形态（Pearson �
 
 ## 实测（RTX 2080 SUPER）
 
-| 输出 | 尺寸 | field | post | 备注 |
-|---|---|---|---|---|
-| 电影画幅 | 2560×1072 | 36 ms | 1.5 ms | 16-bit PNG 16MB |
-| A1 海报预览 | 2000×2832 | 41 ms | 2.2 ms | 16-bit PNG 32MB |
-| A1 300 DPI | 7014×9933 | ~1.2 s | ~0.15 s | **70MP**，8-bit PNG 200MB |
+| 输出 | 尺寸 | field | post | write | 备注 |
+|---|---|---|---|---|---|
+| 电影画幅 | 2560×1072 | 40 ms | 1.3 ms | 66 ms | 16-bit PNG 16MB |
+| A1 海报预览 | 2000×2832 | 53 ms | 2.3 ms | 140 ms | 16-bit PNG 32MB |
+| A1 300 DPI | 7014×9933 | 395 ms | 25 ms | 0.91 s | **70MP**，8-bit PNG 200MB |
+
+（write = sRGB 编码 + dither + 流式落盘，多线程（实验 7/8）。数值为健康
+时钟实测——GPU 降频会把同一负载放大 10 倍以上，A/B 采样注意，见实验 9。）
 
 （quality 轮后 field 从 3 次求值变 5 次 + 每 octave 旋转，field 时间约 ×2；
-渲染仍不是瓶颈，PNG 写盘是。）色彩统计：cinema 均值 RGB (0.18, 0.42, 0.48)
+渲染仍不是瓶颈，写出链（encode + 写盘）是——已并行化 + 流式化，见实验 7/8。）色彩统计：cinema 均值 RGB (0.18, 0.42, 0.48)
 （split-tone 后青调更深、暖高光更活，饱和度 0.35→0.38），dusk (0.51, 0.19, 0.58)。
 
 ## 显存现实 & 分块渲染（todo）
@@ -191,6 +194,6 @@ Gray-Scott 参数 `--rd-f`（feed）/ `--rd-k`（kill）决定形态（Pearson �
 - [ ] tile + halo 分块渲染，打通 A1 600 DPI
 - [ ] 蓝噪声 void-and-cluster 生成 + 抖动/半调印刷质感
 - [ ] curl-noise 粒子平流（水墨/风场线条）
-- [ ] Gray-Scott 反应扩散（珊瑚/斑纹）、stable fluids（烟雾）
+- [ ] Gray-Scott 已实现（`--mode turing`）；stable fluids（烟雾）
 - [ ] 动画：逐帧换 seed 让颗粒「沸腾」，帧序列 → ffmpeg
 - [ ] halation 目前是半分辨率最近邻回采样，可换双线性
