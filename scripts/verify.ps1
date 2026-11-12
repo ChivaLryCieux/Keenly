@@ -41,6 +41,38 @@ function Write-Step([string]$text) {
 }
 
 # ---------------------------------------------------------------------------
+# 0. Flag-sync guard: the bit-exact gate is only meaningful if BOTH build
+#    paths compile the same strict-IEEE math. CMakeLists.txt and
+#    build_direct.ps1 carry the flags in hand-edited form - catch drift here
+#    before it silently turns into "the gate passes on one build path only".
+# ---------------------------------------------------------------------------
+Write-Step "Flag sync: CMakeLists.txt vs build_direct.ps1"
+$cmakeTxt   = Get-Content -LiteralPath (Join-Path $root "CMakeLists.txt") -Raw
+$directTxt  = Get-Content -LiteralPath (Join-Path $root "scripts\build_direct.ps1") -Raw
+
+# Check CODE lines only: both files explain '--fmad=false, no fast-math' in
+# comments, and matching those mentions would fire on every run.
+$cmakeCode  = (($cmakeTxt  -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+$directCode = (($directTxt -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+
+$problems = @()
+if ($cmakeCode  -notmatch '--fmad=false') { $problems += "CMakeLists.txt is missing --fmad=false" }
+if ($directCode -notmatch '--fmad=false') { $problems += "build_direct.ps1 is missing --fmad=false" }
+if ($cmakeCode  -match 'use_fast_math')   { $problems += "CMakeLists.txt enables --use_fast_math (breaks bit-exactness)" }
+if ($directCode -match 'use_fast_math')   { $problems += "build_direct.ps1 enables --use_fast_math (breaks bit-exactness)" }
+if ($cmakeCode  -notmatch 'CMAKE_CUDA_ARCHITECTURES\s+75') { $problems += "CMakeLists.txt CMAKE_CUDA_ARCHITECTURES is not 75" }
+if ($directCode -notmatch 'sm_75')        { $problems += "build_direct.ps1 does not target sm_75" }
+if ($cmakeCode  -notmatch 'CXX_STANDARD 17') { $problems += "CMakeLists.txt is not C++17" }
+if ($directCode -notmatch 'std=c\+\+17')  { $problems += "build_direct.ps1 is not C++17" }
+
+if ($problems.Count -gt 0) {
+    $problems | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+    Write-Host "FLAG DRIFT: the two build paths no longer compile the same math." -ForegroundColor Red
+    exit 1
+}
+Write-Host "flags agree: strict IEEE (--fmad=false), sm_75, C++17"
+
+# ---------------------------------------------------------------------------
 # 1. Build
 # ---------------------------------------------------------------------------
 if ($SkipBuild) {
