@@ -1,13 +1,23 @@
 #pragma once
 // Minimal dependency-free PNG writer for the art pipeline.
 //
-// ASCII-ONLY FILE ON PURPOSE (see src/common/cuda_utils.h for the reason).
+// ASCII-ONLY FILE ON PURPOSE (see src/cuda_utils.h for the reason).
 //
 // RGB or RGBA, 8-bit or 16-bit per channel. The IDAT zlib stream uses
 // uncompressed ("stored") DEFLATE blocks: valid zlib, decodes everywhere,
 // zero external dependencies, zero compression. So a 16-bit A1 poster is a
-// big file on disk. Real compression is listed as future work in docs/art.md.
+// big file on disk. Real compression is listed as future work in
+// docs/pipeline.md.
+//
+// STREAMING: scanlines are converted row by row into a 64KB stored-block
+// staging buffer and flushed straight to the file. The writer never holds
+// the raw scanline stream or a second full-frame IDAT copy - on the 70MP A1
+// export that used to be ~800MB of transient RAM on top of the pixel buffer.
+// Output bytes are IDENTICAL to the old build-the-whole-zlib-vector writer:
+// same 65535-byte block boundaries (computed from the known raw stream
+// length up front), same CRC32 and adler32 values.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -54,25 +64,42 @@ struct Crc32
     uint32_t value() const { return state ^ 0xFFFFFFFFu; }
 };
 
-inline uint32_t adler32(const uint8_t* data, size_t n)
+// Incremental adler32 with the same 5552-byte fold schedule as a one-shot
+// pass over the whole stream (folding a/b mod 65521 never changes the
+// result), so streamed output carries the exact bytes a buffer-built zlib
+// stream would. Fold every 5552 bytes: the longest run that cannot overflow
+// a uint32 accumulator.
+struct Adler32
 {
     uint32_t a = 1u, b = 0u;
-    size_t off = 0;
-    while (off < n) {
-        // Fold modulo 65521 every 5552 bytes: the longest run that cannot
-        // overflow a uint32 accumulator.
-        size_t take = n - off;
-        if (take > 5552) take = 5552;
-        for (size_t i = 0; i < take; ++i) {
-            a += data[off + i];
-            b += a;
+    int pending = 0;  // bytes since last fold (0..5551)
+
+    void update(const uint8_t* data, size_t n)
+    {
+        size_t off = 0;
+        while (off < n) {
+            size_t take = n - off;
+            const size_t room = size_t(5552 - pending);
+            if (take > room) take = room;
+            for (size_t i = 0; i < take; ++i) {
+                a += data[off + i];
+                b += a;
+            }
+            pending += int(take);
+            off += take;
+            if (pending == 5552) {
+                a %= 65521u;
+                b %= 65521u;
+                pending = 0;
+            }
         }
-        a %= 65521u;
-        b %= 65521u;
-        off += take;
     }
-    return (b << 16) | a;
-}
+
+    uint32_t value() const
+    {
+        return ((b % 65521u) << 16) | (a % 65521u);
+    }
+};
 
 inline void putBe32(std::vector<uint8_t>& out, uint32_t v)
 {
@@ -80,32 +107,6 @@ inline void putBe32(std::vector<uint8_t>& out, uint32_t v)
     out.push_back(uint8_t(v >> 16));
     out.push_back(uint8_t(v >> 8));
     out.push_back(uint8_t(v));
-}
-
-// Append `data` as a zlib stream built from stored (uncompressed) DEFLATE
-// blocks. Maximum stored block payload is 65535 bytes.
-inline void appendZlibStored(std::vector<uint8_t>& out, const uint8_t* data, size_t n)
-{
-    out.push_back(0x78);  // CMF: deflate, 32K window
-    out.push_back(0x01);  // FLG: ((0x78 << 8) | 0x01) % 31 == 0, no preset dict
-
-    size_t off = 0;
-    do {
-        size_t take = n - off;
-        if (take > 65535) take = 65535;
-        const bool last = (off + take == n);
-        out.push_back(last ? uint8_t(1) : uint8_t(0));  // BFINAL, BTYPE=00 (stored)
-        const uint16_t len = uint16_t(take);
-        const uint16_t nlen = uint16_t(~len);
-        out.push_back(uint8_t(len & 0xFF));   // LEN, little-endian
-        out.push_back(uint8_t(len >> 8));
-        out.push_back(uint8_t(nlen & 0xFF));  // NLEN = ~LEN
-        out.push_back(uint8_t(nlen >> 8));
-        out.insert(out.end(), data + off, data + off + take);
-        off += take;
-    } while (off < n);
-
-    putBe32(out, adler32(data, n));  // adler32 is big-endian in zlib
 }
 
 inline void writeChunk(std::FILE* f, const char type[4], const std::vector<uint8_t>& data)
@@ -142,32 +143,14 @@ inline bool writePng(const std::string& path, int width, int height, int bitDept
     if (channels != 3 && channels != 4) return false;
 
     const size_t rowBytes = size_t(width) * channels * (bitDepth / 8);
+    const size_t rowSpan = rowBytes + 1;  // + filter byte
+    const size_t totalN = size_t(height) * rowSpan;
 
-    // Raw scanline stream: one filter byte (0 = None) before every row.
-    std::vector<uint8_t> raw(size_t(height) * (rowBytes + 1));
-    if (bitDepth == 8) {
-        const uint8_t* src = static_cast<const uint8_t*>(pixels);
-        for (int y = 0; y < height; ++y) {
-            uint8_t* dst = raw.data() + size_t(y) * (rowBytes + 1);
-            dst[0] = 0;
-            std::memcpy(dst + 1, src + size_t(y) * rowBytes, rowBytes);
-        }
-    } else {
-        const uint16_t* src = static_cast<const uint16_t*>(pixels);
-        for (int y = 0; y < height; ++y) {
-            uint8_t* dst = raw.data() + size_t(y) * (rowBytes + 1);
-            dst[0] = 0;
-            const uint16_t* row = src + size_t(y) * size_t(width) * channels;
-            for (size_t i = 0, n = size_t(width) * channels; i < n; ++i) {
-                dst[1 + 2 * i] = uint8_t(row[i] >> 8);
-                dst[2 + 2 * i] = uint8_t(row[i] & 0xFF);
-            }
-        }
-    }
-
-    std::vector<uint8_t> z;
-    z.reserve(raw.size() + (raw.size() / 65535 + 1) * 5 + 16);
-    appendZlibStored(z, raw.data(), raw.size());
+    // Stored DEFLATE: max 65535 payload bytes per block, 5 header bytes each.
+    // Block boundaries follow the raw stream exactly, so computing the IDAT
+    // length up front lets the chunk header go out before the pixels do.
+    const size_t nBlocks = (totalN + 65534) / 65535;
+    const uint32_t idatLen = uint32_t(2 + nBlocks * 5 + totalN + 4);
 
     std::FILE* f = nullptr;
     if (fopen_s(&f, path.c_str(), "wb") != 0 || f == nullptr) return false;
@@ -184,9 +167,78 @@ inline bool writePng(const std::string& path, int width, int height, int bitDept
     ihdr.push_back(0);                  // filter method 0
     ihdr.push_back(0);                  // interlace 0 = none
     writeChunk(f, "IHDR", ihdr);
-    writeChunk(f, "IDAT", z);
-    writeChunk(f, "IEND", {});
 
+    // ---- IDAT, streamed ----------------------------------------------------
+    std::vector<uint8_t> v;
+    putBe32(v, idatLen);
+    std::fwrite(v.data(), 1, 4, f);
+    std::fwrite("IDAT", 1, 4, f);
+
+    Crc32 crc;
+    crc.update(reinterpret_cast<const uint8_t*>("IDAT"), 4);
+    const uint8_t zhdr[2] = {0x78, 0x01};  // CMF: deflate, 32K window;
+                                           // FLG: ((0x78 << 8) | 0x01) % 31 == 0
+    std::fwrite(zhdr, 1, 2, f);
+    crc.update(zhdr, 2);
+
+    Adler32 ad;
+    std::vector<uint8_t> row(rowSpan);   // filter byte + one scanline
+    std::vector<uint8_t> block(65535);   // stored-block staging
+    size_t filled = 0;                   // bytes staged
+    size_t off = 0;                      // raw-stream bytes emitted
+
+    auto flushBlock = [&](bool last) {
+        const size_t take = filled;
+        uint8_t head[5] = {
+            last ? uint8_t(1) : uint8_t(0),          // BFINAL, BTYPE=00 (stored)
+            uint8_t(take & 0xFF), uint8_t(take >> 8),       // LEN, little-endian
+            uint8_t((~take) & 0xFF), uint8_t((~take) >> 8)  // NLEN = ~LEN
+        };
+        std::fwrite(head, 1, 5, f);
+        crc.update(head, 5);
+        std::fwrite(block.data(), 1, take, f);
+        crc.update(block.data(), take);
+        off += take;
+        filled = 0;
+    };
+
+    for (int y = 0; y < height; ++y) {
+        row[0] = 0;  // filter type 0 (None)
+        if (bitDepth == 8) {
+            const uint8_t* src = static_cast<const uint8_t*>(pixels) + size_t(y) * rowBytes;
+            std::memcpy(row.data() + 1, src, rowBytes);
+        } else {
+            const uint16_t* src = static_cast<const uint16_t*>(pixels)
+                                + size_t(y) * size_t(width) * channels;
+            uint8_t* dst = row.data() + 1;
+            for (size_t i = 0, n = size_t(width) * channels; i < n; ++i) {
+                dst[2 * i]     = uint8_t(src[i] >> 8);    // PNG is big-endian
+                dst[2 * i + 1] = uint8_t(src[i] & 0xFF);
+            }
+        }
+        ad.update(row.data(), rowSpan);
+
+        size_t rOff = 0;
+        while (rOff < rowSpan) {
+            const size_t take = std::min(size_t(65535) - filled, rowSpan - rOff);
+            std::memcpy(block.data() + filled, row.data() + rOff, take);
+            filled += take;
+            rOff += take;
+            if (filled == 65535)
+                flushBlock(off + 65535 == totalN);  // last only if stream ends here
+        }
+    }
+    if (filled > 0) flushBlock(true);
+
+    std::vector<uint8_t> tail;
+    putBe32(tail, ad.value());  // adler32 is big-endian in zlib
+    std::fwrite(tail.data(), 1, 4, f);
+    crc.update(tail.data(), 4);
+    tail.clear();
+    putBe32(tail, crc.value());
+    std::fwrite(tail.data(), 1, 4, f);
+
+    writeChunk(f, "IEND", {});
     return std::fclose(f) == 0;
 }
 
