@@ -50,7 +50,7 @@ src/
   keenly.cu       CLI + 位级门禁 + 九宫格/图标 demo + PNG 写出
   noise.cuh       整数哈希、8 方向梯度噪声、fBm、ridged fBm、Worley、powi
   turing.cuh      Gray-Scott 反应扩散：Jacobi 模拟 + 网格采样（可平铺）
-  pixel.cuh       调色板、分层构图、8 个场生成器（GPU/CPU 共享的像素着色）
+  pixel.cuh       调色板、分层构图、16 个场生成器（GPU/CPU 共享的像素着色）
   sdf.cuh         2D SDF 图元 + 18 个技能符号库（纯多项式 + IEEE sqrt）
   icon.cuh        图标合成：流体背景 + 符号 + 分级边框 + 圆角遮罩 -> RGBA
   post.cuh        每像素后期尾链（split-tone/颗粒/暗角/ACES，静帧与图标共用）
@@ -91,7 +91,7 @@ tools/
 
 ## 生成器 × 调色板
 
-**8 个场生成器**（`--mode`）：
+**16 个场生成器**（`--mode`）：
 
 | mode | 质感 | 数学 |
 |---|---|---|
@@ -103,6 +103,14 @@ tools/
 | `prism` | 凛冽几何：雪佛龙 / 菱格 | 30° 旋转坐标三角波折叠 |
 | `liquid` | 光照质感：液态金属 / 油膜 | 宽场 + 宽高光 + 加性 glint |
 | `turing` | 有机斑纹：珊瑚 / 迷宫 / 斑点 | Gray-Scott 反应扩散（图灵斑） |
+| `agate` | 墨流 / 玛瑙切片（suminagashi） | 双滴椭圆环 + 半径域扭曲 |
+| `waves` | 脉冲星波形山脊（Joy Division） | 行廓线剪影 + 填充遮挡 |
+| `truchet` | 电路 / 织物纹理 | 弧片 truchet 瓦片 + 反相格 |
+| `shards` | 万花筒曼荼罗 | 16 重镜像折叠 + warp 采样 |
+| `dots` | 丝网印刷半调（riso） | 旋转双点阵，半径∝流场色调 |
+| `aura` | 极光丝带 / 地震仪辉光 | fBm 漂移的柔光带 + 细丝纹理 |
+| `moire` | 双源干涉涟漪（op-art） | 两组圆环波乘积 |
+| `deco` | 包豪斯拼贴 | 哈希瓦片几何母题 + 细缝 |
 
 **8 个调色板**（`--preset`）：`cinema`（青橙）、`dusk`（靛蓝-品红-珊瑚）、
 `mono`（灰阶）、`ember`（火）、`ice`（冰川）、`moss`（森林）、

@@ -50,7 +50,15 @@ enum FieldMode
     kFieldFacet = 4,  // hard-edged Worley crystal: flat facets, bright seams
     kFieldPrism = 5,  // folded triangle lattice: austere chevron / diamond grid
     kFieldLiquid = 6, // glossy metal: flowing warp field + specular shading
-    kFieldTuring = 7  // Gray-Scott reaction-diffusion: Turing spots / labyrinths
+    kFieldTuring = 7, // Gray-Scott reaction-diffusion: Turing spots / labyrinths
+    kFieldAgate = 8,  // warped elliptical rings around two drops: suminagashi
+    kFieldWaves = 9,  // stacked waveform silhouettes: pulsar ridge plot
+    kFieldTruchet = 10, // arc-tile truchet: connected circuit / textile paths
+    kFieldShards = 11,  // 16-fold mirror kaleidoscope of the warp field
+    kFieldDots = 12,    // halftone screens: dot radius follows a warped tone
+    kFieldAura = 13,    // drifting silk ribbons: additive quartic bumps
+    kFieldMoire = 14,   // two-source ring interference: op-art ripples
+    kFieldDeco = 15     // bauhaus mosaic: hashed flat motif tiles
 };
 
 struct FieldParams
@@ -114,6 +122,68 @@ __host__ __device__ inline float warpField(float x, float y, const FieldParams& 
     const float rx = fbm2(x + w4 * qx + 1.7f, y + w4 * qy + 9.2f, s + 307u, oc, lac, gn);
     const float ry = fbm2(x + w4 * qx + 8.3f, y + w4 * qy + 2.8f, s + 401u, oc, lac, gn);
     return fbm2(x + w4 * rx, y + w4 * ry, s + 503u, oc, lac, gn);
+}
+
+// ---- helpers for the geometric generators ---------------------------------
+
+__host__ __device__ inline float distf(float ax, float ay, float bx, float by)
+{
+    const float dx = ax - bx;
+    const float dy = ay - by;
+    return sqrtf(dx * dx + dy * dy);
+}
+
+// Height of one pulsar-wave row (kFieldWaves): a low rolling baseline plus
+// sharp spikes, in row-local units (1 = one row band). Capped under 2 so a
+// peak can only reach into the band above - the pixel loop scans rows r..r+1.
+__host__ __device__ inline float waveProfile(float px, int row, const FieldParams& p)
+{
+    const float fj = float(row);
+    const float wave = 0.30f + 0.12f * fbm2(px * 1.3f, fj * 0.22f,
+                                            p.seed + 331u, p.octaves,
+                                            p.lacunarity, p.gain);
+    // cubed noise tail with hard gain: low noise flattens out, rare fBm
+    // crests become tall thin peaks - the pulsar silhouette lives in the
+    // tail, so it needs amplification, not a threshold
+    const float n = fbm2(px * 1.5f, fj * 0.15f, p.seed + 517u,
+                         p.octaves, p.lacunarity, p.gain);
+    const float s0 = n > 0.0f ? n : 0.0f;
+    const float prof = wave + 13.0f * s0 * s0 * s0;
+    return prof > 2.6f ? 2.6f : prof;
+}
+
+// Bauhaus tones: a hash quantized to four palette positions, keeping every
+// tile a flat unmodulated color (the look dies if tones slide along a ramp).
+__host__ __device__ inline float decoTone(float h)
+{
+    const int q = int(h * 4.0f) & 3;
+    return 0.12f + 0.24f * float(q);
+}
+
+// One flat motif inside a unit cell (fx, fy in [0, 1)). Returns the tile tone
+// in [0, 1]. Motifs are the bauhaus starter set: quarter discs, diagonal
+// splits, a center dot, ring arcs and edge half-discs.
+__host__ __device__ inline float decoMotif(float fx, float fy, int id,
+                                           float t0, float t1)
+{
+    switch (id & 7) {
+        case 0: return distf(fx, fy, 0.0f, 0.0f) < 0.92f ? t1 : t0;
+        case 1: return distf(fx, fy, 1.0f, 0.0f) < 0.92f ? t1 : t0;
+        case 2: return distf(fx, fy, 0.0f, 1.0f) < 0.92f ? t1 : t0;
+        case 3: return distf(fx, fy, 1.0f, 1.0f) < 0.92f ? t1 : t0;
+        case 4: return fx + fy < 1.0f ? t1 : t0;
+        case 5: return fx < fy ? t1 : t0;
+        case 6: {
+            const float d = distf(fx, fy, 0.5f, 0.5f);
+            if (d < 0.30f) return t1;
+            return d < 0.46f ? t0 : 0.5f * (t0 + t1);
+        }
+        default: {
+            // ring arc in the lower-left corner
+            const float d = distf(fx, fy, 0.0f, 1.0f);
+            return (d > 0.42f && d < 0.78f) ? t1 : t0;
+        }
+    }
 }
 
 // Raw field value in ~[-1, 1] for one generator, coordinates (u, v) in image
@@ -190,6 +260,190 @@ __host__ __device__ inline float fieldValue(const FieldParams& p, float u, float
             const float sc = float(p.rdRes) / p.view;
             return sampleTuring(p.turingTex, p.rdRes, px * sc, py * sc);
         }
+        case kFieldAgate: {
+            // suminagashi rings: two ink drops; the mean distance gives nested
+            // elliptical bands, then the radius is advected through an fBm
+            // flow so the rings shear like combed marbling.
+            const float c1x = (hash01(11, 3, s) - 0.5f) * 0.70f * p.view;
+            const float c1y = (hash01(23, 5, s) - 0.5f) * 0.70f * p.view;
+            const float c2x = (hash01(37, 7, s) - 0.5f) * 0.70f * p.view;
+            const float c2y = (hash01(53, 9, s) - 0.5f) * 0.70f * p.view;
+            float r = 0.5f * (distf(px, py, c1x, c1y) + distf(px, py, c2x, c2y));
+            r += p.warp * 0.18f * fbm2(px * 0.9f, py * 0.9f, s + 911u,
+                                       oc, lac, gn);
+            const float ring = triFrac(r * p.bands * 0.45f);
+            const float wgt = 0.55f + 0.45f * fbm2(r * 1.7f, px * 0.30f - py * 0.20f,
+                                                   s + 733u, 3, lac, gn);
+            return (2.0f * sstep(0.08f, 0.92f, ring) - 1.0f) * wgt;
+        }
+        case kFieldWaves: {
+            // pulsar ridge plot: rows scan back to front; each row's curve
+            // sits at l = 1 - profile, fills down to its slot bottom (so
+            // nearer rows occlude farther ones) and strokes a bright line.
+            const float R = p.bands * 4.2f;
+            const float vr = v * R + 0.5f * R;  // v in [-0.5,0.5] -> row 0..R
+            const int r = int(floorf(vr));
+            const float lw = 0.045f;
+            float val = -1.0f;
+            for (int j = r; j <= r + 2; ++j) {
+                const float l = vr - float(j);
+                const float lc = 1.0f - waveProfile(px, j, p);
+                if (l >= lc) val = -1.0f;                 // fill occludes
+                const float stroke = sstep(lw + 0.025f, lw - 0.025f, absf(l - lc));
+                if (stroke > 0.0f) {
+                    const float rowHi = 0.70f + 0.30f * hash01(j, 0, s + 41u);
+                    val = mx(val, 2.0f * stroke * rowHi - 1.0f);
+                }
+            }
+            return val;
+        }
+        case kFieldTruchet: {
+            // connected arc tiles: quarter arcs at radius 1/4 and 3/4 around
+            // one diagonal corner pair, so paths continue across cells; a
+            // few cells break the rhythm with a pip or a blank.
+            const float cs = p.view / p.bands;
+            const int cx = int(floorf(px / cs));
+            const int cy = int(floorf(py / cs));
+            const float fx = px / cs - float(cx);
+            const float fy = py / cs - float(cy);
+            const float h1 = hash01(cx, cy, s);
+            const float h2 = hash01(cx, cy, s + 131u);
+            const float h3 = hash01(cx, cy, s + 257u);
+            const float h4 = hash01(cx, cy, s + 389u);
+            const float ax0 = h1 < 0.5f ? 0.0f : 1.0f;
+            const float d0 = distf(fx, fy, ax0, 0.0f);
+            const float d1 = distf(fx, fy, 1.0f - ax0, 1.0f);
+            float band = sstep(0.115f, 0.085f, absf(d0 - 0.25f));
+            band = mx(band, sstep(0.115f, 0.085f, absf(d0 - 0.75f)));
+            band = mx(band, sstep(0.115f, 0.085f, absf(d1 - 0.25f)));
+            band = mx(band, sstep(0.115f, 0.085f, absf(d1 - 0.75f)));
+            if (h2 < 0.14f) {
+                // pip cell instead of a dead blank: a lone dot keeps rhythm
+                band = sstep(0.15f, 0.11f, distf(fx, fy, 0.5f, 0.5f));
+            }
+            // ~1 in 5 cells invert: dark paths on a lit ground
+            const float inv = h3 < 0.20f ? -1.0f : 1.0f;
+            return (2.0f * band - 1.0f) * inv * (0.75f + 0.25f * h4);
+        }
+        case kFieldShards: {
+            // 16-fold dihedral kaleidoscope: fold (u, v) into a 1/16 wedge
+            // using only abs, one swap and one reflection with exact 45deg
+            // constants, then run the organic warp field through the fold.
+            float a = absf(u);
+            float b = absf(v);
+            if (b > a) { const float t = a; a = b; b = t; }
+            if (b > a * 0.41421356f) {
+                const float na = (a + b) * 0.70710678f;
+                const float nb = (a - b) * 0.70710678f;
+                a = na; b = nb;
+            }
+            float t = warpField(a * p.view * 1.15f, b * p.view * 1.15f, p);
+            const float r = sqrtf(u * u + v * v);
+            return t + 0.35f * (0.5f - r);
+        }
+        case kFieldDots: {
+            // screenprint halftone: two rotated dot lattices overprint and
+            // each dot's radius follows a low-frequency warp tone, so the
+            // picture is built out of ink dots like a riso print.
+            float tone = 0.50f + 0.85f * warpField(px * 0.55f, py * 0.55f, p)
+                       + 0.12f * fbm2(px * 0.30f, py * 0.30f, s + 521u,
+                                      4, lac, gn);
+            tone = tone < 0.0f ? 0.0f : (tone > 1.0f ? 1.0f : tone);
+            const float cs = p.view / (p.bands * 2.5f);
+            // screen A, rotated +15 deg
+            const float ax = px * 0.96592582f - py * 0.25881905f;
+            const float ay = px * 0.25881905f + py * 0.96592582f;
+            const float fx = ax / cs - floorf(ax / cs);
+            const float fy = ay / cs - floorf(ay / cs);
+            const float ra = 0.04f + 0.62f * tone;
+            float ink = sstep(ra + 0.085f, ra - 0.085f, distf(fx, fy, 0.5f, 0.5f));
+            // screen B, rotated -30 deg, half-cell offset: fixed radius dot
+            // that fades in only in the deep zones - a modulated radius would
+            // spray sub-pixel speckle at the threshold instead of printing
+            const float bx = px * 0.8660254f + py * 0.5f;
+            const float by = -px * 0.5f + py * 0.8660254f;
+            const float gx = bx / cs + 0.5f - floorf(bx / cs + 0.5f);
+            const float gy = by / cs + 0.5f - floorf(by / cs + 0.5f);
+            const float wb = 0.80f * sstep(0.60f, 0.82f, tone);
+            if (wb > 0.0f) {
+                ink = mx(ink, wb * sstep(0.285f, 0.115f,
+                                         distf(gx, gy, 0.5f, 0.5f)));
+            }
+            // print polarity: dark ink dots on paper, not beads on black
+            return 1.0f - 2.0f * ink;
+        }
+        case kFieldAura: {
+            // drifting silk ribbons: five fBm-displaced bands, each a quartic
+            // bump cross-section with a stretched filament texture inside.
+            float acc = -0.55f;
+            for (int i = 0; i < 6; ++i) {
+                const float fi = float(i);
+                const float c0 = -0.40f + 0.16f * fi
+                               + (hash01(i, 3, s + 613u) - 0.5f) * 0.08f;
+                const float drift = fbm2(px * (0.55f + 0.15f * fi) + fi * 7.31f,
+                                         fi * 3.7f, s + 601u + unsigned(i) * 17u,
+                                         oc, lac, gn);
+                const float cy = c0 + 0.28f * drift;
+                const float rw = 0.012f + 0.030f * hash01(i, 7, s + 887u);
+                const float z = (v - cy) / rw;
+                const float b0 = 1.0f - z * z;
+                const float bump = b0 > 0.0f ? b0 * b0 : 0.0f;
+                const float fil = 0.45f + 0.55f * fbm2(px * 11.0f,
+                                                       v * 0.9f + fi * 11.0f,
+                                                       s + 907u + unsigned(i) * 13u,
+                                                       4, lac, gn);
+                acc += bump * fil * (0.40f + 0.5f * hash01(i, 5, s + 941u));
+            }
+            return acc > 1.0f ? 1.0f : acc;
+        }
+        case kFieldMoire: {
+            // two nearby ring emitters: bipolar triangle waves multiplied,
+            // giving the interference beat of two wave sources - water
+            // ripple op art with a slight field wobble.
+            const float c1x = (hash01(11, 1, s + 349u) - 0.5f) * 0.50f * p.view;
+            const float c1y = (hash01(13, 2, s + 353u) - 0.5f) * 0.50f * p.view;
+            const float c2x = (hash01(17, 3, s + 359u) - 0.5f) * 0.50f * p.view;
+            const float c2y = (hash01(19, 4, s + 367u) - 0.5f) * 0.50f * p.view;
+            const float w = p.warp * 0.05f * fbm2(px * 0.8f, py * 0.8f, s + 419u,
+                                                  oc - 2, lac, gn);
+            const float k = p.bands * 1.5f;
+            const float r1 = 2.0f * sstep(0.10f, 0.90f,
+                triFrac((distf(px, py, c1x, c1y) + w) * k)) - 1.0f;
+            const float r2 = 2.0f * sstep(0.10f, 0.90f,
+                triFrac((distf(px, py, c2x, c2y) - w) * k)) - 1.0f;
+            return r1 * r2;
+        }
+        case kFieldDeco: {
+            // bauhaus quilt: a hashed flat motif per cell on a coarse grid,
+            // some cells subdivide 2x2 for scale rhythm; thin grout seams.
+            const float cs = p.view / (p.bands * 0.66f);
+            const int cx = int(floorf(px / cs));
+            const int cy = int(floorf(py / cs));
+            const float fx = px / cs - float(cx);
+            const float fy = py / cs - float(cy);
+            const float h1 = hash01(cx, cy, s);
+            const float h2 = hash01(cx, cy, s + 179u);
+            const float h3 = hash01(cx, cy, s + 311u);
+            const float h4 = hash01(cx, cy, s + 449u);
+            float tone;
+            if (h4 < 0.22f) {
+                const float sfx = fx * 2.0f;
+                const float sfy = fy * 2.0f;
+                const int scx = int(floorf(sfx));
+                const int scy = int(floorf(sfy));
+                const float sh = hash01(cx * 4 + scx, cy * 4 + scy, s + 977u);
+                const float sh2 = hash01(cx * 4 + scx, cy * 4 + scy, s + 983u);
+                tone = decoMotif(sfx - floorf(sfx), sfy - floorf(sfy),
+                                 int(sh * 8.0f), decoTone(sh2), decoTone(h3));
+            } else {
+                tone = decoMotif(fx, fy, int(h1 * 8.0f),
+                                 decoTone(h2), decoTone(h3));
+            }
+            const float dx = fx < 0.5f ? fx : 1.0f - fx;
+            const float dy = fy < 0.5f ? fy : 1.0f - fy;
+            if (mn(dx, dy) < 0.035f) tone = 0.04f;
+            return 2.0f * tone - 1.0f;
+        }
         default:
             return warpField(px, py, p);
     }
@@ -226,7 +480,8 @@ __host__ __device__ inline void fieldPixel(const FieldParams& p, int x, int y, i
     // the main field alone.)
     const float macro = fbm2(u * p.view * 0.42f, v * p.view * 0.42f, p.seed + 1009u,
                              p.octaves, p.lacunarity, p.gain) * p.macroAmt;
-    if (p.mode == kFieldWarp || p.mode == kFieldRidge || p.mode == kFieldLiquid) {
+    if (p.mode == kFieldWarp || p.mode == kFieldRidge || p.mode == kFieldLiquid
+        || p.mode == kFieldAgate || p.mode == kFieldShards || p.mode == kFieldAura) {
         const float det = fbm2(u * p.view * 2.3f, v * p.view * 2.3f, p.seed + 2003u,
                                p.octaves - 1, p.lacunarity, p.gain);
         tc += 0.11f * det * p.contrast * p.macroAmt;
@@ -270,6 +525,10 @@ __host__ __device__ inline void fieldPixel(const FieldParams& p, int x, int y, i
         shade += 0.85f * powi(diff, 48);   // hard facet glints
     } else if (p.mode == kFieldFrost) {
         shade += 1.10f * powi(diff, 90);   // micro sparkle
+    } else if (p.mode == kFieldShards) {
+        shade += 0.55f * powi(diff, 32);   // jeweled glints along the folds
+    } else if (p.mode == kFieldAgate) {
+        shade += 0.30f * powi(diff, 24);   // soft sheen on the ring crests
     }
 
     rgb[0] *= shade;
@@ -283,6 +542,12 @@ __host__ __device__ inline void fieldPixel(const FieldParams& p, int x, int y, i
         rgb[0] += glint;
         rgb[1] += glint * 0.94f;
         rgb[2] += glint * 0.82f;
+    } else if (p.mode == kFieldAura) {
+        // additive cool-white glow on the ribbon crests: light, not paint
+        const float glint = powi(diff, 8) * 0.30f;
+        rgb[0] += glint * 0.88f;
+        rgb[1] += glint;
+        rgb[2] += glint * 1.12f;
     }
 }
 

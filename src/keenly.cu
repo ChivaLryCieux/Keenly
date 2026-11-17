@@ -398,7 +398,8 @@ static void printUsage()
         "  --depth  D     PNG bits per channel: 8 or 16 (default 16)\n"
         "  --out    P     output PNG path         (default out/field.png)\n"
         "  --preset P     mono|cinema|dusk|ember|ice|moss (default cinema)\n"
-        "  --mode   M     warp|ridge|bands|frost|facet|prism|liquid|turing (default warp)\n"
+        "  --mode   M     warp|ridge|bands|frost|facet|prism|liquid|turing|agate\n"
+        "                 waves|truchet|shards|dots|aura|moire|deco (default warp)\n"
         "  --bands  N     contour frequency for bands mode (default 12)\n"
         "  --rd-f   F     Gray-Scott feed rate   (turing mode, default 0.0545)\n"
         "  --rd-k   F     Gray-Scott kill rate   (turing mode, default 0.062)\n"
@@ -480,9 +481,18 @@ static bool parseArgs(int argc, char** argv, Args& a)
             else if (std::strcmp(v, "prism") == 0)  a.field.mode = 5;
             else if (std::strcmp(v, "liquid") == 0) a.field.mode = 6;
             else if (std::strcmp(v, "turing") == 0) a.field.mode = 7;
+            else if (std::strcmp(v, "agate") == 0)   a.field.mode = 8;
+            else if (std::strcmp(v, "waves") == 0)   a.field.mode = 9;
+            else if (std::strcmp(v, "truchet") == 0) a.field.mode = 10;
+            else if (std::strcmp(v, "shards") == 0)  a.field.mode = 11;
+            else if (std::strcmp(v, "dots") == 0)    a.field.mode = 12;
+            else if (std::strcmp(v, "aura") == 0)    a.field.mode = 13;
+            else if (std::strcmp(v, "moire") == 0)   a.field.mode = 14;
+            else if (std::strcmp(v, "deco") == 0)    a.field.mode = 15;
             else {
                 std::fprintf(stderr, "unknown mode: %s "
-                             "(use warp|ridge|bands|frost|facet|prism|liquid|turing)\n", v);
+                             "(use warp|ridge|bands|frost|facet|prism|liquid|turing"
+                             "|agate|waves|truchet|shards|dots|aura|moire|deco)\n", v);
                 return false;
             }
         } else if (key == "--bands") {
@@ -678,10 +688,12 @@ static bool runCheck(const keenly::FieldParams& p)
 // generator. This is what scripts\verify.ps1 runs after every change.
 static int runCheckAll()
 {
-    static const char* kModes[8] = {"warp", "ridge", "bands", "frost",
-                                    "facet", "prism", "liquid", "turing"};
+    static const char* kModes[16] = {"warp", "ridge", "bands", "frost",
+                                     "facet", "prism", "liquid", "turing",
+                                     "agate", "waves", "truchet", "shards",
+                                     "dots", "aura", "moire", "deco"};
     bool allOk = true;
-    for (int m = 0; m < 8; ++m) {
+    for (int m = 0; m < 16; ++m) {
         keenly::FieldParams f;
         keenly::PostParams p;
         applyPreset(f, p, "cinema", 0u);
@@ -704,9 +716,9 @@ static int runCheckAll()
 // one image with a dark gap grid. Each cell is a full pipeline render
 // (field + post) and runs the bit-exact verify gate.
 //
-// Current lineup: nine variants of the organic cinematic family (the look
-// that worked), spanning palettes and scale/warp/contrast tuning instead of
-// jumping between shape languages. A zero override keeps the preset default.
+// Current lineup: the warp anchor plus the eight modern-art generators -
+// one cell per shape language so the grid reads as a style catalog. A zero
+// override keeps the preset default.
 static int runGrid(const Args& args)
 {
     struct Cell
@@ -720,15 +732,15 @@ static int runGrid(const Args& args)
         float relief;
     };
     static const Cell cells[9] = {
-        {"cinema", keenly::kFieldWarp,  7u,  0.0f, 0.0f, 0.0f, 0.0f},  // hero anchor
-        {"cinema", keenly::kFieldWarp,  55u, 0.0f, 1.7f, 0.0f, 0.0f},  // stronger twist
-        {"dusk",   keenly::kFieldWarp,  21u, 0.0f, 0.0f, 0.0f, 0.0f},  // magenta flow
-        {"moss",   keenly::kFieldWarp,  33u, 0.0f, 0.0f, 0.0f, 0.0f},  // green organic
-        {"ember",  keenly::kFieldWarp,  14u, 0.0f, 0.0f, 0.0f, 0.0f},  // warm organic
-        {"ice",    keenly::kFieldWarp,  8u,  2.6f, 0.0f, 0.0f, 0.0f},  // finer forms
-        {"dusk",   keenly::kFieldRidge, 11u, 0.0f, 0.0f, 0.0f, 0.0f},  // marble veins
-        {"cinema", keenly::kFieldLiquid, 7u, 0.0f, 0.0f, 0.0f, 0.0f},  // glossy metal
-        {"cinema", keenly::kFieldWarp,  91u, 2.2f, 0.0f, 1.5f, 3.0f}   // drama variant
+        {"cinema", keenly::kFieldWarp,    7u,  0.0f, 0.0f, 0.0f, 0.0f}, // hero anchor
+        {"gold",   keenly::kFieldAgate,   7u,  0.0f, 0.0f, 0.0f, 0.0f}, // suminagashi
+        {"mono",   keenly::kFieldWaves,   7u,  0.0f, 0.0f, 0.0f, 0.0f}, // pulsar plot
+        {"dusk",   keenly::kFieldTruchet, 7u,  0.0f, 0.0f, 0.0f, 0.0f}, // arc circuit
+        {"violet", keenly::kFieldShards,  7u,  0.0f, 0.0f, 0.0f, 0.0f}, // kaleidoscope
+        {"ember",  keenly::kFieldDots,    7u,  0.0f, 0.0f, 0.0f, 0.0f}, // riso halftone
+        {"ice",    keenly::kFieldAura,    7u,  0.0f, 0.0f, 0.0f, 0.0f}, // silk ribbons
+        {"cinema", keenly::kFieldMoire,   7u,  0.0f, 0.0f, 0.0f, 0.0f}, // interference
+        {"dusk",   keenly::kFieldDeco,    7u,  0.0f, 0.0f, 0.0f, 0.0f}  // bauhaus quilt
     };
 
     const int tile = args.tile;

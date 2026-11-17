@@ -16,14 +16,11 @@
 #include <cmath>
 #include <cstdint>
 
+#include "noise.cuh"
+
 namespace keenly
 {
-
-// ---- scalar helpers -------------------------------------------------------
-
-__host__ __device__ inline float mn(float a, float b) { return a < b ? a : b; }
-__host__ __device__ inline float mx(float a, float b) { return a > b ? a : b; }
-__host__ __device__ inline float absf(float x) { return x < 0.0f ? -x : x; }
+// Scalar helpers mn/mx/absf live in noise.cuh (shared with pixel.cuh).
 
 // Polynomial smooth min (quadratic trade): blends unions so they read as one
 // shape instead of glued primitives. k > 0 in all call sites.

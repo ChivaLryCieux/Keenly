@@ -36,7 +36,7 @@ fBm 梯度噪声 (5 octave，每 octave 旋转 14°，消网格对齐伪影)
 src/
   keenly.cu      CLI + 位级门禁 + 九宫格 showcase + PNG 写出
   noise.cuh      整数哈希、8 方向梯度噪声、fBm、ridged fBm、Worley、powi
-  pixel.cuh      调色板、分层构图、7 个场生成器（GPU/CPU 共享的像素着色）
+  pixel.cuh      调色板、分层构图、16 个场生成器（GPU/CPU 共享的像素着色）
   render.h/.cu   field kernel + post 链（bright/blur/compose）
   reference.cu   CPU 参考（串行遍历，同 pixel shader）
   png_writer.h   零依赖流式 PNG 写出（RGB 8/16-bit，stored DEFLATE）
@@ -75,7 +75,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build_direct.ps1   # 全量
 
 CLI 显式参数优先于 preset 默认值（`keenly.cu` 用 set 位图跟踪）。
 
-## 七个场生成器（--mode）
+## 十六个场生成器（--mode）
 
 | mode | 数学 | 质感 |
 |---|---|---|
@@ -87,6 +87,14 @@ CLI 显式参数优先于 preset 默认值（`keenly.cu` 用 set 位图跟踪）
 | `prism` | 30° 旋转坐标上的三角波折叠 | **凛冽几何**：雪佛龙 / 菱格栅（直方图双峰） |
 | `liquid` | warpField 宽场 + powi-16 高光 + 加性 glint | **光照质感**：液态金属 / 油膜 |
 | `turing` | Gray-Scott 反应扩散（图灵斑） | **有机斑纹**：珊瑚 / 迷宫 / 斑点 |
+| `agate` | 双墨滴椭圆环 + 半径 fBm 平流 | **墨流**：玛瑙切片 / suminagashi |
+| `waves` | 逐行廓线（正部立方尖峰）+ 前后遮挡填充 | **数据图美学**：脉冲星波形山脊 |
+| `truchet` | 角部 1/4+3/4 双弧片、连通路径、~1/5 反相格 | **电路织物**：truchet 瓦片 |
+| `shards` | abs+交换+22.5° 反射折入 1/16 楔 → warp 采样 | **万花筒**：16 重对称曼荼罗 |
+| `dots` | +15°/-30° 双旋转点阵，点半径∝扭曲色调 | **丝网印刷**：riso 半调 |
+| `aura` | 6 条 fBm 漂移四次方柔光带 + 拉伸细丝纹理 | **极光丝带**：地震仪辉光 |
+| `moire` | 双近源双极三角波环相乘 + 微扰 | **干涉涟漪**：op-art 波纹 |
+| `deco` | 哈希瓦片母题（1/4 圆/对角/圆点/弧）+ 2x2 细分 | **包豪斯**：平色拼贴 |
 
 全部是 `(x, y, seed)` 纯函数、纯多项式 + IEEE sqrt 运算（Worley 距离、
 整数幂高光）——CPU/GPU 逐位一致由此成立。高光的性格按模式分：
@@ -112,10 +120,10 @@ Gray-Scott 参数 `--rd-f`（feed）/ `--rd-k`（kill）决定形态（Pearson �
 
 ## 九宫格阵容（runGrid cells 表）
 
-当前阵容：**有机电影家族的 9 个变体**（调色板 × 尺度/扭曲/对比度微调）——
-第一轮风格实验的结论是「好看」来自构图与调色，不是形状语言的种类，
-所以阵容回到验证过的家族里拉开参数。改 `keenly.cu` 里 `runGrid()`
-的 cells 表即可换阵容（支持每格 view/warp/contrast/relief 覆盖）。
+当前阵容：**warp 锚点 + 8 个现代艺术生成器**（agate / waves / truchet /
+shards / dots / aura / moire / deco）——每格一种形状语言，九宫格即风格
+目录。改 `keenly.cu` 里 `runGrid()` 的 cells 表即可换阵容（支持每格
+view/warp/contrast/relief 覆盖）。
 
 ## 质感旋钮
 

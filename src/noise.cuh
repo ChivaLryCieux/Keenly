@@ -207,6 +207,11 @@ __host__ __device__ inline WorleyResult worley2(float x, float y, unsigned seed)
     return r;
 }
 
+// Scalar helpers, branch-free selects (shared by pixel.cuh and sdf.cuh).
+__host__ __device__ inline float mn(float a, float b) { return a < b ? a : b; }
+__host__ __device__ inline float mx(float a, float b) { return a > b ? a : b; }
+__host__ __device__ inline float absf(float x) { return x < 0.0f ? -x : x; }
+
 // Integer power by binary exponentiation: a fixed multiply sequence, so
 // bit-identical on CPU and GPU (never use libm pow here).
 __host__ __device__ inline float powi(float x, int n)
