@@ -32,6 +32,7 @@ struct PostParams
     float vignette = 0.35f;   // corner darkening amount
     float splitTone = 0.35f;  // teal shadows / warm highlights grade strength
     float saturation = 1.12f; // chroma expansion around luminance (1 = off)
+    float margin = 0.0f;      // > 0: matte white frame, fraction of image height
 };
 
 __host__ __device__ inline float luminance(const float* c)
@@ -112,6 +113,17 @@ __host__ __device__ inline void postTail(float* c, int x, int y, int w, int h,
     c[0] = acesFilmic(c[0] < 0.0f ? 0.0f : c[0]);
     c[1] = acesFilmic(c[1] < 0.0f ? 0.0f : c[1]);
     c[2] = acesFilmic(c[2] < 0.0f ? 0.0f : c[2]);
+
+    // Paper frame: pixels within margin*h of any edge go to matte white,
+    // so posters print with the reference sheet's clean border.
+    if (p.margin > 0.0f) {
+        const float dx = (x < w - 1 - x) ? float(x) : float(w - 1 - x);
+        const float dy = (y < h - 1 - y) ? float(y) : float(h - 1 - y);
+        const float d = (dx < dy) ? dx : dy;
+        if (d < p.margin * float(h)) {
+            c[0] = c[1] = c[2] = 0.96f;
+        }
+    }
 }
 
 }  // namespace keenly

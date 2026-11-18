@@ -22,16 +22,19 @@
 namespace keenly
 {
 
-// Color ramp: up to 6 stops, strictly increasing positions. Stops live in
+// Color ramp: up to 8 stops, strictly increasing positions. Stops live in
 // perceptual (sRGB-like) space - easier to author - and paletteLookup()
 // linearizes with gamma 2.0 (a single multiply: exact on CPU and GPU).
+// (8 = room for a wrapping rainbow: 7 hues with red repeated at both ends.)
 struct Palette
 {
     int count = 2;
-    float pos[6] = {0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-    float rgb[6][3] = {
+    float pos[8] = {0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    float rgb[8][3] = {
         {0.0f, 0.0f, 0.0f},
         {1.0f, 1.0f, 1.0f},
+        {0.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f},
         {0.0f, 0.0f, 0.0f},
         {0.0f, 0.0f, 0.0f},
         {0.0f, 0.0f, 0.0f},
@@ -58,7 +61,8 @@ enum FieldMode
     kFieldDots = 12,    // halftone screens: dot radius follows a warped tone
     kFieldAura = 13,    // drifting silk ribbons: additive quartic bumps
     kFieldMoire = 14,   // two-source ring interference: op-art ripples
-    kFieldDeco = 15     // bauhaus mosaic: hashed flat motif tiles
+    kFieldDeco = 15,    // bauhaus mosaic: hashed flat motif tiles
+    kFieldGlow = 16     // soft additive light blobs on black: mesh gradient
 };
 
 struct FieldParams
@@ -449,6 +453,101 @@ __host__ __device__ inline float fieldValue(const FieldParams& p, float u, float
     }
 }
 
+// Soft additive glow on black: pal.count light blobs (pal.rgb = their colors)
+// laid out top/bottom around a dark center pool, each advected by a gentle
+// fBm so the silhouettes look organic. Colors enter as LIGHT, sum under a
+// soft-winner mix, and fade into the dark ground. coreLift floors the dark
+// pool: 0 = pure black center (posters), >0 keeps a dim tint (icons need a
+// colored floor under the glyph for readability).
+__host__ __device__ inline void glowField(const FieldParams& p, float u, float v,
+                                          float* rgb, float coreLift)
+{
+    rgb[0] = rgb[1] = rgb[2] = 0.0f;
+    const unsigned s = p.seed;
+    const int oc = p.octaves;
+    const float lac = p.lacunarity;
+    const float gn = p.gain;
+    const int n = p.pal.count;
+
+    // Layout contract: BLACK CENTER, colors surrounding above and below.
+    // Blob slots alternate top/bottom and are spread along the frame's
+    // horizontal span with jitter, so the palette wraps the dark core.
+
+    // ambient nebula floor: the palette's mean color at low intensity, wobbled
+    // by a slow fBm, so "black" areas are deep tinted space instead of a void
+    {
+        float amb[3] = {0.0f, 0.0f, 0.0f};
+        for (int i = 0; i < n; ++i) {
+            amb[0] += p.pal.rgb[i][0] * p.pal.rgb[i][0];
+            amb[1] += p.pal.rgb[i][1] * p.pal.rgb[i][1];
+            amb[2] += p.pal.rgb[i][2] * p.pal.rgb[i][2];
+        }
+        const float w = 0.025f + 0.045f * fbm2(u * 1.6f, v * 1.6f, s + 2441u,
+                                             3, lac, gn) / float(n);
+        rgb[0] += amb[0] * w;
+        rgb[1] += amb[1] * w;
+        rgb[2] += amb[2] * w;
+    }
+
+    // pass 1: per-blob light intensity (compact bright core + wide faint
+    // halo), so overlap zones can settle "who owns this pixel"
+    float Ii[8];
+    float Itot = 0.0f;
+    for (int i = 0; i < n; ++i) {
+        // slot i alternates bottom(-1)/top(+1); base x spreads the band's
+        // blobs evenly across the width, hash adds jitter
+        const float side = ((i & 1) == 0) ? 1.0f : -1.0f;
+        const float bx = (float(i) + 0.5f) / float(n) * 2.0f - 1.0f;
+        const float cx = bx * 0.95f + (hash01(i, 3, s) - 0.5f) * 0.42f;
+        const float cy = side * (0.58f + 0.24f * hash01(i, 7, s));
+        const float R = 0.50f + 0.40f * hash01(i, 13, s);
+
+        // organic silhouette: advect the sample point by a shared fBm
+        const float wa = 0.16f * fbm2(u * 2.2f + float(i) * 5.13f,
+                                      v * 2.2f, s + unsigned(i) * 101u,
+                                      oc - 1, lac, gn);
+        const float wb = 0.16f * fbm2(u * 2.2f, v * 2.2f + float(i) * 7.31f,
+                                      s + unsigned(i) * 137u,
+                                      oc - 1, lac, gn);
+        // horizontal stretch: edge glows sweep wide along the frame
+        const float ddx = (u + wa - cx) * 0.80f;
+        const float ddy = v + wb - cy;
+        const float d = sqrtf(ddx * ddx + ddy * ddy);
+        const float q1 = sstep(R * 0.55f, 0.0f, d);
+        const float q2 = sstep(R * 1.35f, 0.0f, d);
+        Ii[i] = (0.85f * q1 * q1 + 0.30f * q2 * q2)
+              * (0.55f + 0.45f * hash01(i, 17, s));
+        Itot += Ii[i];
+    }
+
+    // pass 2: soft-winner mixing. A blob's effective intensity scales with
+    // its local ownership share (45% floor + 55% by dominance), so each
+    // color keeps a territory instead of dissolving into the additive mean
+    const float inv = (Itot > 1e-5f) ? 1.0f / Itot : 0.0f;
+    for (int i = 0; i < n; ++i) {
+        const float J = Ii[i] * (0.45f + 0.55f * Ii[i] * inv);
+        rgb[0] += p.pal.rgb[i][0] * p.pal.rgb[i][0] * J;
+        rgb[1] += p.pal.rgb[i][1] * p.pal.rgb[i][1] * J;
+        rgb[2] += p.pal.rgb[i][2] * p.pal.rgb[i][2] * J;
+    }
+
+    // dark-core mask: a pool at frame center with a wide feathered rim. The
+    // pool's field coordinate is advected by the same shared fBm as the
+    // blobs, so its edge wobbles organically instead of reading as a drawn
+    // ellipse; guarantees "black stays in the middle" for every seed.
+    {
+        const float cu = u + 0.13f * fbm2(u * 2.0f + 13.7f, v * 2.0f,
+                                          s + 3311u, oc - 1, lac, gn);
+        const float cv = v + 0.13f * fbm2(u * 2.0f, v * 2.0f + 9.1f,
+                                          s + 3317u, oc - 1, lac, gn);
+        const float rc = sqrtf(cu * cu * 0.85f + cv * cv);
+        const float cm = coreLift + (1.0f - coreLift) * sstep(0.05f, 0.50f, rc);
+        rgb[0] *= cm;
+        rgb[1] *= cm;
+        rgb[2] *= cm;
+    }
+}
+
 // One pixel, linear RGB. Field value drives the palette; finite-difference
 // gradients of the same field at TWO scales drive the fake normal (light
 // fixed at upper-left): a coarse slope models the big forms, a fine slope
@@ -459,6 +558,20 @@ __host__ __device__ inline void fieldPixel(const FieldParams& p, int x, int y, i
     const float aspect = float(w) / float(h);
     const float u = (float(x) + 0.5f) / float(h) - 0.5f * aspect;
     const float v = (float(y) + 0.5f) / float(h) - 0.5f;
+
+    if (p.mode == kFieldGlow) {
+        // Soft-blob path: no palette ramp, no relief - smooth light only,
+        // with a faint macro luminance drift so large areas do not go dead
+        // flat. Film grain lands later in the shared post tail.
+        glowField(p, u, v, rgb, 0.0f);
+        const float m = 0.90f + 0.20f *
+            fbm2(u * p.view * 0.35f, v * p.view * 0.35f, p.seed + 1009u,
+                 3, p.lacunarity, p.gain) * p.macroAmt;
+        rgb[0] *= m;
+        rgb[1] *= m;
+        rgb[2] *= m;
+        return;
+    }
     const float step = 1.2f / float(h);   // fine relief over ~1 pixel
     const float cstep = 3.6f / float(h);  // coarse relief over ~3 pixels
 

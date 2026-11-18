@@ -43,16 +43,26 @@ struct Args
     int tile = 800;        // showcase cell size
     keenly::FieldParams field;
     keenly::PostParams postp;
+    float film = -1.0f;      // >= 0: force the film-filter grain spec on any preset
     std::string out = "out/field.png";
 
     // ---- icon mode ---------------------------------------------------------
     bool iconMode = false;     // render one RGBA skill icon instead of a still
     std::string family = "blue";  // blue|red|gold|purple
     std::string glyph = "sword";  // glyph name, see sdf.cuh glyphName()
-    int tier = 2;              // frame tier 1..4
+    int tier = 2;              // frame tier 1..4 (0 = none, generic only)
+    bool tierSet = false;      // --tier was given on the CLI
     int maskRound = 1;         // 1 = rounded rect, 0 = sharp rect
     float radius = 0.16f;      // corner radius, fraction of the min side
     std::string iconsDemo;     // non-empty: render the icon demo batch to DIR
+
+    // ---- generic icon pipeline (rainbow bg + flat fg silhouette) -----------
+    bool giconMode = false;    // generic icon path (overrides family)
+    std::string bg = "fluid";  // style: fluid|swirl|bands|rings|mosaic|glow
+    std::string scheme = "aurora";   // glow scheme: aurora|sepia|flare|tide
+    std::string glowDemo;      // non-empty: render the glow-icon demo batch
+    std::string fg = "white";  // flat glyph color: white|black
+    std::string rainbowDemo;   // non-empty: render the generic demo batch
 };
 
 // ---- presets ---------------------------------------------------------------
@@ -67,8 +77,41 @@ enum SetBits
     kSetContrast = 1u << 3,  kSetRelief = 1u << 4,    kSetSeed = 1u << 5,
     kSetExposure = 1u << 6,  kSetGrain = 1u << 7,     kSetGrainScale = 1u << 8,
     kSetHalation = 1u << 9,  kSetBloom = 1u << 10,    kSetVignette = 1u << 11,
-    kSetSplitTone = 1u << 12, kSetBands = 1u << 13, kSetSaturation = 1u << 14
+    kSetSplitTone = 1u << 12, kSetBands = 1u << 13, kSetSaturation = 1u << 14,
+    kSetMode = 1u << 15
 };
+
+// Glow-scheme color sets shared by the poster presets (--preset) and the
+// generic icon pipeline (--bg glow --scheme). pal.rgb[i] is a blob color;
+// count = number of blobs. Perceptual values - glowField squares to linear.
+static bool glowScheme(keenly::Palette& pal, const std::string& name)
+{
+    pal.count = 4;
+    if (name == "aurora") {
+        pal.rgb[0][0] = 0.30f; pal.rgb[0][1] = 0.08f; pal.rgb[0][2] = 0.62f;
+        pal.rgb[1][0] = 0.04f; pal.rgb[1][1] = 0.55f; pal.rgb[1][2] = 0.78f;
+        pal.rgb[2][0] = 0.30f; pal.rgb[2][1] = 0.80f; pal.rgb[2][2] = 0.38f;
+        pal.rgb[3][0] = 0.08f; pal.rgb[3][1] = 0.28f; pal.rgb[3][2] = 0.82f;
+    } else if (name == "sepia") {
+        pal.rgb[0][0] = 0.42f; pal.rgb[0][1] = 0.24f; pal.rgb[0][2] = 0.10f;
+        pal.rgb[1][0] = 0.78f; pal.rgb[1][1] = 0.55f; pal.rgb[1][2] = 0.32f;
+        pal.rgb[2][0] = 0.98f; pal.rgb[2][1] = 0.88f; pal.rgb[2][2] = 0.70f;
+        pal.rgb[3][0] = 0.92f; pal.rgb[3][1] = 0.60f; pal.rgb[3][2] = 0.18f;
+    } else if (name == "flare") {
+        pal.rgb[0][0] = 0.42f; pal.rgb[0][1] = 0.10f; pal.rgb[0][2] = 0.62f;
+        pal.rgb[1][0] = 0.85f; pal.rgb[1][1] = 0.25f; pal.rgb[1][2] = 0.55f;
+        pal.rgb[2][0] = 0.98f; pal.rgb[2][1] = 0.45f; pal.rgb[2][2] = 0.12f;
+        pal.rgb[3][0] = 0.95f; pal.rgb[3][1] = 0.68f; pal.rgb[3][2] = 0.12f;
+    } else if (name == "tide") {
+        pal.rgb[0][0] = 0.55f; pal.rgb[0][1] = 0.07f; pal.rgb[0][2] = 0.09f;
+        pal.rgb[1][0] = 0.04f; pal.rgb[1][1] = 0.48f; pal.rgb[1][2] = 0.52f;
+        pal.rgb[2][0] = 0.80f; pal.rgb[2][1] = 0.95f; pal.rgb[2][2] = 0.85f;
+        pal.rgb[3][0] = 0.35f; pal.rgb[3][1] = 0.12f; pal.rgb[3][2] = 0.55f;
+    } else {
+        return false;
+    }
+    return true;
+}
 
 static void applyPreset(keenly::FieldParams& f, keenly::PostParams& p, const std::string& name,
                         unsigned set)
@@ -207,8 +250,53 @@ static void applyPreset(keenly::FieldParams& f, keenly::PostParams& p, const std
         if (!(set & kSetBloom))      p.bloom = 0.12f;
         if (!(set & kSetVignette))   p.vignette = 0.30f;
         if (!(set & kSetSplitTone))  p.splitTone = 0.16f;
+    } else if (name == "aurora") {
+        // glow mode: violet / cyan / spring green bleeding in over black
+        // (the "daily color scheme" mesh-gradient poster look)
+        glowScheme(f.pal, "aurora");
+        if (!(set & kSetMode))       f.mode = keenly::kFieldGlow;
+        if (!(set & kSetGrain))      p.grain = 0.10f;
+        if (!(set & kSetGrainScale)) p.grainScale = 2.2f;
+        if (!(set & kSetHalation))   p.halation = 0.22f;
+        if (!(set & kSetBloom))      p.bloom = 0.10f;
+        if (!(set & kSetVignette))   p.vignette = 0.30f;
+        if (!(set & kSetSplitTone))  p.splitTone = 0.0f;
+        if (!(set & kSetSaturation)) p.saturation = 1.05f;
+    } else if (name == "sepia") {
+        // glow mode: umber / tan / cream - warm vintage lantern light
+        glowScheme(f.pal, "sepia");
+        if (!(set & kSetMode))       f.mode = keenly::kFieldGlow;
+        if (!(set & kSetGrain))      p.grain = 0.11f;
+        if (!(set & kSetGrainScale)) p.grainScale = 2.0f;
+        if (!(set & kSetHalation))   p.halation = 0.30f;
+        if (!(set & kSetBloom))      p.bloom = 0.12f;
+        if (!(set & kSetVignette))   p.vignette = 0.32f;
+        if (!(set & kSetSplitTone))  p.splitTone = 0.0f;
+        if (!(set & kSetSaturation)) p.saturation = 1.0f;
+    } else if (name == "flare") {
+        // glow mode: royal purple / magenta pink / ember orange
+        glowScheme(f.pal, "flare");
+        if (!(set & kSetMode))       f.mode = keenly::kFieldGlow;
+        if (!(set & kSetGrain))      p.grain = 0.095f;
+        if (!(set & kSetGrainScale)) p.grainScale = 2.3f;
+        if (!(set & kSetHalation))   p.halation = 0.28f;
+        if (!(set & kSetBloom))      p.bloom = 0.11f;
+        if (!(set & kSetVignette))   p.vignette = 0.30f;
+        if (!(set & kSetSplitTone))  p.splitTone = 0.0f;
+        if (!(set & kSetSaturation)) p.saturation = 1.08f;
+    } else if (name == "tide") {
+        // glow mode: deep red / teal / pale mint - cold tide under embers
+        glowScheme(f.pal, "tide");
+        if (!(set & kSetMode))       f.mode = keenly::kFieldGlow;
+        if (!(set & kSetGrain))      p.grain = 0.10f;
+        if (!(set & kSetGrainScale)) p.grainScale = 2.2f;
+        if (!(set & kSetHalation))   p.halation = 0.25f;
+        if (!(set & kSetBloom))      p.bloom = 0.10f;
+        if (!(set & kSetVignette))   p.vignette = 0.32f;
+        if (!(set & kSetSplitTone))  p.splitTone = 0.0f;
+        if (!(set & kSetSaturation)) p.saturation = 1.04f;
     } else {
-        std::fprintf(stderr, "unknown preset: %s (use mono|cinema|dusk|ember|ice|moss|gold|violet)\n",
+        std::fprintf(stderr, "unknown preset: %s (use mono|cinema|dusk|ember|ice|moss|gold|violet|aurora|sepia|flare|tide)\n",
                      name.c_str());
         std::exit(1);
     }
@@ -397,9 +485,14 @@ static void printUsage()
         "  --height N     image height in pixels  (default 1072)\n"
         "  --depth  D     PNG bits per channel: 8 or 16 (default 16)\n"
         "  --out    P     output PNG path         (default out/field.png)\n"
-        "  --preset P     mono|cinema|dusk|ember|ice|moss (default cinema)\n"
+        "  --preset P     mono|cinema|dusk|ember|ice|moss|gold|violet\n"
+        "                 aurora|sepia|flare|tide       (default cinema)\n"
         "  --mode   M     warp|ridge|bands|frost|facet|prism|liquid|turing|agate\n"
-        "                 waves|truchet|shards|dots|aura|moire|deco (default warp)\n"
+        "                 waves|truchet|shards|dots|aura|moire|deco|glow\n"
+        "                                                    (default warp)\n"
+        "  --film   F     film-filter grain spec, F = grain strength multiplier\n"
+        "                 (overrides preset grain; works on any style)\n"
+        "  --margin F     matte white poster frame, fraction of height\n"
         "  --bands  N     contour frequency for bands mode (default 12)\n"
         "  --rd-f   F     Gray-Scott feed rate   (turing mode, default 0.0545)\n"
         "  --rd-k   F     Gray-Scott kill rate   (turing mode, default 0.062)\n"
@@ -430,10 +523,17 @@ static void printUsage()
         "  --family F     blue|red|gold|purple        (default blue)\n"
         "  --glyph  G     sword|axe|bow|shield|flame|droplet|snow|bolt|sparkle\n"
         "                 moon|sun|eye|heart|skull|cross|rune|crown|potion\n"
-        "  --tier   N     frame tier 1..4             (default 2)\n"
+        "  --tier   N     frame tier 1..4 (0 = none)   (default 2)\n"
         "  --mask   M     round|rect                   (default round)\n"
         "  --radius F     corner radius, min-side fraction (default 0.16)\n"
-        "  --icons-demo P render the icon demo batch into directory P\n");
+        "  --icons-demo P render the icon demo batch into directory P\n"
+        "generic icons (rainbow/glow background + flat fg silhouette):\n"
+        "  --gicon        render one generic icon (uses --bg --fg --glyph --tier)\n"
+        "  --bg     B     fluid|swirl|bands|rings|mosaic|glow (default fluid)\n"
+        "  --scheme S     aurora|sepia|flare|tide      (bg=glow, default aurora)\n"
+        "  --fg     C     white|black                   (default white)\n"
+        "  --rainbow-demo P render the generic icon batch into directory P\n"
+        "  --glow-demo  P  render the glow icon batch (scheme x fg) into dir P\n");
 }
 
 static bool parseArgs(int argc, char** argv, Args& a)
@@ -489,12 +589,14 @@ static bool parseArgs(int argc, char** argv, Args& a)
             else if (std::strcmp(v, "aura") == 0)    a.field.mode = 13;
             else if (std::strcmp(v, "moire") == 0)   a.field.mode = 14;
             else if (std::strcmp(v, "deco") == 0)    a.field.mode = 15;
+            else if (std::strcmp(v, "glow") == 0)    a.field.mode = 16;
             else {
                 std::fprintf(stderr, "unknown mode: %s "
                              "(use warp|ridge|bands|frost|facet|prism|liquid|turing"
-                             "|agate|waves|truchet|shards|dots|aura|moire|deco)\n", v);
+                             "|agate|waves|truchet|shards|dots|aura|moire|deco|glow)\n", v);
                 return false;
             }
+            a.postSet |= kSetMode;
         } else if (key == "--bands") {
             const char* v = next("--bands");
             if (!v) return false;
@@ -586,6 +688,14 @@ static bool parseArgs(int argc, char** argv, Args& a)
             if (!v) return false;
             a.postp.saturation = float(std::atof(v));
             a.postSet |= kSetSaturation;
+        } else if (key == "--film") {
+            const char* v = next("--film");
+            if (!v) return false;
+            a.film = float(std::atof(v));
+        } else if (key == "--margin") {
+            const char* v = next("--margin");
+            if (!v) return false;
+            a.postp.margin = float(std::atof(v));
         } else if (key == "--macro") {
             const char* v = next("--macro");
             if (!v) return false;
@@ -620,6 +730,7 @@ static bool parseArgs(int argc, char** argv, Args& a)
             const char* v = next("--tier");
             if (!v) return false;
             a.tier = std::atoi(v);
+            a.tierSet = true;
             a.iconMode = true;
         } else if (key == "--mask") {
             const char* v = next("--mask");
@@ -640,6 +751,53 @@ static bool parseArgs(int argc, char** argv, Args& a)
             const char* v = next("--icons-demo");
             if (!v) return false;
             a.iconsDemo = v;
+        } else if (key == "--gicon") {
+            a.giconMode = true;
+            a.iconMode = true;
+        } else if (key == "--bg") {
+            const char* v = next("--bg");
+            if (!v) return false;
+            if (std::strcmp(v, "fluid") == 0 || std::strcmp(v, "swirl") == 0 ||
+                std::strcmp(v, "bands") == 0 || std::strcmp(v, "rings") == 0 ||
+                std::strcmp(v, "mosaic") == 0 || std::strcmp(v, "glow") == 0) {
+                a.bg = v;
+            } else {
+                std::fprintf(stderr, "unknown bg: %s (use fluid|swirl|bands|rings|mosaic|glow)\n", v);
+                return false;
+            }
+            a.giconMode = true;
+            a.iconMode = true;
+        } else if (key == "--scheme") {
+            const char* v = next("--scheme");
+            if (!v) return false;
+            if (std::strcmp(v, "aurora") == 0 || std::strcmp(v, "sepia") == 0 ||
+                std::strcmp(v, "flare") == 0 || std::strcmp(v, "tide") == 0) {
+                a.scheme = v;
+            } else {
+                std::fprintf(stderr, "unknown scheme: %s (use aurora|sepia|flare|tide)\n", v);
+                return false;
+            }
+            a.giconMode = true;
+            a.iconMode = true;
+        } else if (key == "--glow-demo") {
+            const char* v = next("--glow-demo");
+            if (!v) return false;
+            a.glowDemo = v;
+        } else if (key == "--fg") {
+            const char* v = next("--fg");
+            if (!v) return false;
+            if (std::strcmp(v, "white") == 0 || std::strcmp(v, "black") == 0) {
+                a.fg = v;
+            } else {
+                std::fprintf(stderr, "unknown fg: %s (use white|black)\n", v);
+                return false;
+            }
+            a.giconMode = true;
+            a.iconMode = true;
+        } else if (key == "--rainbow-demo") {
+            const char* v = next("--rainbow-demo");
+            if (!v) return false;
+            a.rainbowDemo = v;
         } else {
             std::fprintf(stderr, "unknown option: %s\n", key.c_str());
             return false;
@@ -688,12 +846,12 @@ static bool runCheck(const keenly::FieldParams& p)
 // generator. This is what scripts\verify.ps1 runs after every change.
 static int runCheckAll()
 {
-    static const char* kModes[16] = {"warp", "ridge", "bands", "frost",
+    static const char* kModes[17] = {"warp", "ridge", "bands", "frost",
                                      "facet", "prism", "liquid", "turing",
                                      "agate", "waves", "truchet", "shards",
-                                     "dots", "aura", "moire", "deco"};
+                                     "dots", "aura", "moire", "deco", "glow"};
     bool allOk = true;
-    for (int m = 0; m < 16; ++m) {
+    for (int m = 0; m < 17; ++m) {
         keenly::FieldParams f;
         keenly::PostParams p;
         applyPreset(f, p, "cinema", 0u);
@@ -806,6 +964,85 @@ static int glyphFromName(const std::string& name)
     return -1;
 }
 
+// ---- generic icon pipeline --------------------------------------------------
+// Rainbow background + a pure white/black silhouette glyph. No family
+// palette: the background IS the color story, the glyph is a neutral shape.
+
+static int bgModeFromName(const std::string& name)
+{
+    if (name == "fluid")  return keenly::kBgFluid;
+    if (name == "swirl")  return keenly::kBgSwirl;
+    if (name == "bands")  return keenly::kBgBands;
+    if (name == "rings")  return keenly::kBgRings;
+    if (name == "mosaic") return keenly::kBgMosaic;
+    if (name == "glow")   return keenly::kBgGlow;
+    return -1;
+}
+
+static void applyRainbowIcon(keenly::IconParams& ip, int bgMode, bool whiteFg,
+                             const std::string& scheme)
+{
+    using namespace keenly;
+    // Field params feed rainbowBg's warp field / glowField's blobs. For the
+    // rainbow styles the palette is built inside icon.cuh; for glow the
+    // scheme's blob colors land in ip.field.pal here.
+    ip.field.seed = 7u;
+    ip.field.view = 3.0f;
+    ip.field.warp = 0.40f;   // gentle warp: w4 = 4*warp displaces the lookup
+                             // by ~1.6 noise units -> bends the field instead
+                             // of scrambling it (still-pipeline warp 1.2 is
+                             // per-pixel hue confetti on a 7-stop palette)
+    ip.field.octaves = 3;      // hue wants a SMOOTH field: 5-octave fBm at
+                             // icon size is per-pixel hue jitter, not swirls
+    ip.field.contrast = 1.55f;
+    ip.field.relief = 2.2f;
+    ip.field.bands = 12.0f;
+    ip.field.macroAmt = 0.6f;
+
+    ip.post = PostParams();
+    ip.post.grain = 0.018f;
+    ip.post.grainScale = 2.0f;
+    ip.post.halation = 0.0f;
+    ip.post.bloom = 0.0f;
+    ip.post.vignette = 0.18f;
+    ip.post.splitTone = 0.0f;   // a teal/orange grade would skew the rainbow
+    ip.post.saturation = 1.05f;
+
+    ip.bgMode = bgMode;
+    ip.flat = 1;
+    ip.tier = 0;
+    // dimmer rainbow under white ink, fuller brightness under black ink
+    ip.bgDim = whiteFg ? 0.80f : 0.95f;
+
+    // Linear values: pure black is exact; "white" runs hot on purpose so it
+    // still reads white after the ACES shoulder (~0.92 sRGB), same trick as
+    // the family strokes.
+    const float W = 2.6f;
+    if (whiteFg) {
+        ip.fgFill[0] = W; ip.fgFill[1] = W; ip.fgFill[2] = W;
+        ip.fgStroke[0] = 0.0f; ip.fgStroke[1] = 0.0f; ip.fgStroke[2] = 0.0f;
+    } else {
+        ip.fgFill[0] = 0.0f; ip.fgFill[1] = 0.0f; ip.fgFill[2] = 0.0f;
+        ip.fgStroke[0] = W; ip.fgStroke[1] = W; ip.fgStroke[2] = W;
+    }
+
+    if (bgMode == kBgGlow) {
+        // Poster-glow background: the scheme's 4 blob colors go into the
+        // field palette; the glyph sits on the dark pool, so the pool gets
+        // a floor (white ink likes it near-black, black ink needs tint).
+        if (!glowScheme(ip.field.pal, scheme)) {
+            std::fprintf(stderr, "unknown scheme: %s (use aurora|sepia|flare|tide)\n",
+                         scheme.c_str());
+            std::exit(1);
+        }
+        ip.coreLift = whiteFg ? 0.10f : 0.42f;
+        ip.field.macroAmt = 0.5f;
+        ip.post.grain = 0.055f;      // glow icons keep the film-grain character
+        ip.post.grainScale = 2.2f;
+        ip.post.vignette = 0.22f;
+    }
+}
+
 // Icon gate: same iconPixel on CPU and GPU, bit-exact like the field gate.
 static bool runIconCheck(const keenly::IconParams& p)
 {
@@ -868,23 +1105,57 @@ static int runIcon(const Args& args)
 {
     const int glyph = glyphFromName(args.glyph);
     if (glyph < 0) return 1;
-    if (args.tier < 1 || args.tier > 4) {
-        std::fprintf(stderr, "bad tier: %d (use 1..4)\n", args.tier);
+    if (args.tier < 0 || args.tier > 4 || (!args.giconMode && args.tier < 1)) {
+        std::fprintf(stderr, "bad tier: %d (family: 1..4, generic: 0..4)\n",
+                     args.tier);
         return 1;
     }
 
     keenly::IconParams ip;
-    applyIconFamily(ip, args.family);
+    if (args.giconMode) {
+        const int bm = bgModeFromName(args.bg);
+        if (bm < 0) {
+            std::fprintf(stderr, "unknown bg: %s\n", args.bg.c_str());
+            return 1;
+        }
+        applyRainbowIcon(ip, bm, args.fg != "black", args.scheme);
+        // generic icons take the seed knob straight: seed IS the variant id.
+        ip.field.seed = args.field.seed;
+        ip.post.seed = args.field.seed;
+        if (args.film >= 0.0f) {
+            ip.post.grain = 0.055f * args.film;
+            ip.post.grainScale = 2.4f;
+        }
+        // a few field knobs pass through when explicitly set
+        if (args.postSet & kSetView)     ip.field.view = args.field.view;
+        if (args.postSet & kSetWarp)     ip.field.warp = args.field.warp;
+        if (args.postSet & kSetContrast) ip.field.contrast = args.field.contrast;
+        if (args.postSet & kSetRelief)   ip.field.relief = args.field.relief;
+        if (args.postSet & kSetOctaves)  ip.field.octaves = args.field.octaves;
+        if (args.postSet & kSetBands)    ip.field.bands = args.field.bands;
+        if (!args.tierSet) ip.tier = 0;
+        else               ip.tier = args.tier;
+    } else {
+        applyIconFamily(ip, args.family);
+        ip.tier = args.tier;
+        ip.field.seed = 7u;
+        ip.post.seed = 7u;
+    }
     ip.glyph = glyph;
-    ip.tier = args.tier;
     ip.roundedMask = args.maskRound;
     ip.radius = args.radius;
-    ip.field.seed = 7u;
-    ip.post.seed = 7u;
 
-    std::printf("icon   : %s / %s / t%d / %s mask\n", args.family.c_str(),
-                keenly::glyphName(glyph), args.tier,
-                args.maskRound ? "round" : "rect");
+    if (args.giconMode) {
+        std::printf("gicon  : %s bg / %s fg / %s / t%d / %s mask / seed %u%s%s\n",
+                    args.bg.c_str(), args.fg.c_str(), keenly::glyphName(glyph),
+                    ip.tier, args.maskRound ? "round" : "rect", ip.field.seed,
+                    args.bg == "glow" ? "  scheme " : "",
+                    args.bg == "glow" ? args.scheme.c_str() : "");
+    } else {
+        std::printf("icon   : %s / %s / t%d / %s mask\n", args.family.c_str(),
+                    keenly::glyphName(glyph), args.tier,
+                    args.maskRound ? "round" : "rect");
+    }
     return renderOneIcon(args, ip, args.width, args.height, args.out) ? 0 : 1;
 }
 
@@ -1014,6 +1285,216 @@ static int runIconsDemo(const Args& args)
     return allOk ? 0 : 1;
 }
 
+// Generic icon demo: every bg style x every fg color x every glyph at 128px,
+// one contact sheet per (style, fg) plus a compact style-comparison sheet.
+// The bit-exact gate runs once per style (same coverage argument as the
+// family demo: params differ only by seed and glyph id).
+static int runRainbowDemo(const Args& args)
+{
+    static const char* kStyles[5] = {"fluid", "swirl", "bands", "rings", "mosaic"};
+    static const int kStyleIds[5] = {keenly::kBgFluid, keenly::kBgSwirl,
+                                     keenly::kBgBands, keenly::kBgRings,
+                                     keenly::kBgMosaic};
+    static const char* kFgs[2] = {"white", "black"};
+    const int kT = 128;
+    const int gap = 16;
+    const std::string root = args.rainbowDemo;
+    bool allOk = true;
+
+    // Overview sheet: 5 style rows x 2 fg columns, sword glyph.
+    const int ovw = 2 * kT + 3 * gap;
+    const int ovh = 5 * kT + 6 * gap;
+    std::vector<float> overview(size_t(ovw) * size_t(ovh) * 3, 0.030f);
+
+    for (int st = 0; st < 5; ++st) {
+        for (int fi = 0; fi < 2; ++fi) {
+            const bool white = (fi == 0);
+
+            // Per (style, fg) sheet: 6 cols x 3 rows of 128px icons.
+            const int cols = 6;
+            const int rows = (keenly::kGlyphCount + cols - 1) / cols;
+            const int sw = cols * kT + (cols + 1) * gap;
+            const int sh = rows * kT + (rows + 1) * gap;
+            std::vector<float> sheet(size_t(sw) * size_t(sh) * 3, 0.030f);
+
+            GpuBuffer scratch;
+            std::vector<float> icon;
+            for (int g = 0; g < keenly::kGlyphCount; ++g) {
+                keenly::IconParams ip;
+                applyRainbowIcon(ip, kStyleIds[st], white, "aurora");
+                ip.glyph = g;
+                ip.field.seed = 7u + unsigned(g) * 13u;
+                ip.post.seed = ip.field.seed;
+
+                if (g == 0 && args.check && !runIconCheck(ip)) {
+                    std::fprintf(stderr, "ICON CHECK FAILED on %s/%s\n",
+                                 kStyles[st], kFgs[fi]);
+                    allOk = false;
+                }
+
+                char name[160];
+                std::snprintf(name, sizeof(name), "%s/%s_%s.png", kStyles[st],
+                              kFgs[fi], keenly::glyphName(g));
+                renderIconToHost(ip, kT, kT, icon, scratch);
+                if (!writeImageRgba(root + "/" + name, kT, kT, icon.data())) {
+                    std::fprintf(stderr, "failed to write %s\n", name);
+                    allOk = false;
+                }
+
+                // paste onto the contact sheet (alpha over dark)
+                const int cx = gap + (g % cols) * (kT + gap);
+                const int cy = gap + (g / cols) * (kT + gap);
+                for (int y = 0; y < kT; ++y) {
+                    for (int x = 0; x < kT; ++x) {
+                        const size_t ci = (size_t(y) * kT + x) * 4;
+                        const float a = icon[ci + 3];
+                        float* s = &sheet[(size_t(cy + y) * sw + cx + x) * 3];
+                        for (int c = 0; c < 3; ++c)
+                            s[c] = icon[ci + c] * a + 0.030f * (1.0f - a);
+                    }
+                }
+
+                // overview cell = sword of this style/fg
+                if (g == keenly::kGlyphSword) {
+                    const int ox = gap + fi * (kT + gap);
+                    const int oy = gap + st * (kT + gap);
+                    for (int y = 0; y < kT; ++y) {
+                        for (int x = 0; x < kT; ++x) {
+                            const size_t ci = (size_t(y) * kT + x) * 4;
+                            const float a = icon[ci + 3];
+                            float* s = &overview[(size_t(oy + y) * ovw + ox + x) * 3];
+                            for (int c = 0; c < 3; ++c)
+                                s[c] = icon[ci + c] * a + 0.030f * (1.0f - a);
+                        }
+                    }
+                }
+            }
+
+            char sheetName[160];
+            std::snprintf(sheetName, sizeof(sheetName), "sheets/sheet_%s_%s.png",
+                          kStyles[st], kFgs[fi]);
+            if (!writeImage(root + "/" + sheetName, sw, sh, 8, sheet.data())) {
+                std::fprintf(stderr, "failed to write %s\n", sheetName);
+                allOk = false;
+            } else {
+                std::printf("wrote  : %s/%s  (%dx%d)\n", root.c_str(), sheetName,
+                            sw, sh);
+            }
+            std::printf("style  : %-6s %-5s done\n", kStyles[st], kFgs[fi]);
+        }
+    }
+
+    if (!writeImage(root + "/sheet_styles.png", ovw, ovh, 8, overview.data())) {
+        std::fprintf(stderr, "failed to write sheet_styles.png\n");
+        allOk = false;
+    } else {
+        std::printf("wrote  : %s/sheet_styles.png  (%dx%d)\n", root.c_str(),
+                    ovw, ovh);
+    }
+    return allOk ? 0 : 1;
+}
+
+// Glow icon demo: every scheme x every fg color x every glyph at 128px.
+// Same structure as the rainbow demo - one contact sheet per (scheme, fg),
+// plus an overview sheet with scheme rows and fg columns.
+static int runGlowDemo(const Args& args)
+{
+    static const char* kSchemes[4] = {"aurora", "sepia", "flare", "tide"};
+    static const char* kFgs[2] = {"white", "black"};
+    const int kT = 128;
+    const int gap = 16;
+    const std::string root = args.glowDemo;
+    bool allOk = true;
+
+    const int ovw = 2 * kT + 3 * gap;
+    const int ovh = 4 * kT + 5 * gap;
+    std::vector<float> overview(size_t(ovw) * size_t(ovh) * 3, 0.030f);
+
+    for (int st = 0; st < 4; ++st) {
+        for (int fi = 0; fi < 2; ++fi) {
+            const bool white = (fi == 0);
+
+            const int cols = 6;
+            const int rows = (keenly::kGlyphCount + cols - 1) / cols;
+            const int sw = cols * kT + (cols + 1) * gap;
+            const int sh = rows * kT + (rows + 1) * gap;
+            std::vector<float> sheet(size_t(sw) * size_t(sh) * 3, 0.030f);
+
+            GpuBuffer scratch;
+            std::vector<float> icon;
+            for (int g = 0; g < keenly::kGlyphCount; ++g) {
+                keenly::IconParams ip;
+                applyRainbowIcon(ip, keenly::kBgGlow, white, kSchemes[st]);
+                ip.glyph = g;
+                ip.field.seed = 7u + unsigned(g) * 13u;
+                ip.post.seed = ip.field.seed;
+
+                if (g == 0 && args.check && !runIconCheck(ip)) {
+                    std::fprintf(stderr, "ICON CHECK FAILED on %s/%s\n",
+                                 kSchemes[st], kFgs[fi]);
+                    allOk = false;
+                }
+
+                char name[160];
+                std::snprintf(name, sizeof(name), "%s/%s_%s.png", kSchemes[st],
+                              kFgs[fi], keenly::glyphName(g));
+                renderIconToHost(ip, kT, kT, icon, scratch);
+                if (!writeImageRgba(root + "/" + name, kT, kT, icon.data())) {
+                    std::fprintf(stderr, "failed to write %s\n", name);
+                    allOk = false;
+                }
+
+                const int cx = gap + (g % cols) * (kT + gap);
+                const int cy = gap + (g / cols) * (kT + gap);
+                for (int y = 0; y < kT; ++y) {
+                    for (int x = 0; x < kT; ++x) {
+                        const size_t ci = (size_t(y) * kT + x) * 4;
+                        const float a = icon[ci + 3];
+                        float* s = &sheet[(size_t(cy + y) * sw + cx + x) * 3];
+                        for (int c = 0; c < 3; ++c)
+                            s[c] = icon[ci + c] * a + 0.030f * (1.0f - a);
+                    }
+                }
+
+                if (g == keenly::kGlyphSword) {
+                    const int ox = gap + fi * (kT + gap);
+                    const int oy = gap + st * (kT + gap);
+                    for (int y = 0; y < kT; ++y) {
+                        for (int x = 0; x < kT; ++x) {
+                            const size_t ci = (size_t(y) * kT + x) * 4;
+                            const float a = icon[ci + 3];
+                            float* s = &overview[(size_t(oy + y) * ovw + ox + x) * 3];
+                            for (int c = 0; c < 3; ++c)
+                                s[c] = icon[ci + c] * a + 0.030f * (1.0f - a);
+                        }
+                    }
+                }
+            }
+
+            char sheetName[160];
+            std::snprintf(sheetName, sizeof(sheetName), "sheets/sheet_%s_%s.png",
+                          kSchemes[st], kFgs[fi]);
+            if (!writeImage(root + "/" + sheetName, sw, sh, 8, sheet.data())) {
+                std::fprintf(stderr, "failed to write %s\n", sheetName);
+                allOk = false;
+            } else {
+                std::printf("wrote  : %s/%s  (%dx%d)\n", root.c_str(), sheetName,
+                            sw, sh);
+            }
+            std::printf("scheme : %-6s %-5s done\n", kSchemes[st], kFgs[fi]);
+        }
+    }
+
+    if (!writeImage(root + "/sheet_schemes.png", ovw, ovh, 8, overview.data())) {
+        std::fprintf(stderr, "failed to write sheet_schemes.png\n");
+        allOk = false;
+    } else {
+        std::printf("wrote  : %s/sheet_schemes.png  (%dx%d)\n", root.c_str(),
+                    ovw, ovh);
+    }
+    return allOk ? 0 : 1;
+}
+
 int main(int argc, char** argv)
 {
     Args args;
@@ -1032,6 +1513,12 @@ int main(int argc, char** argv)
     if (!args.iconsDemo.empty())
         return runIconsDemo(args);
 
+    if (!args.rainbowDemo.empty())
+        return runRainbowDemo(args);
+
+    if (!args.glowDemo.empty())
+        return runGlowDemo(args);
+
     if (args.iconMode)
         return runIcon(args);
 
@@ -1039,6 +1526,12 @@ int main(int argc, char** argv)
         return runGrid(args);
 
     applyPreset(args.field, args.postp, args.preset, args.postSet);
+    if (args.film >= 0.0f) {
+        // Dedicated film filter: a fixed 35mm-style clumped grain spec
+        // (clumps ~2.4px) forced on top of whatever the preset picked.
+        args.postp.grain = 0.055f * args.film;
+        args.postp.grainScale = 2.4f;
+    }
     std::printf("render : %dx%d  preset %s  mode %d  seed %u  view %.2f  warp %.2f  octaves %d\n",
                 args.width, args.height, args.preset.c_str(), args.field.mode,
                 args.field.seed, args.field.view, args.field.warp, args.field.octaves);
