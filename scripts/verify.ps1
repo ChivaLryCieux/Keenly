@@ -103,7 +103,7 @@ if ($LASTEXITCODE -ne 0) {
 # ---------------------------------------------------------------------------
 # 3. Render smoke test (launch + PNG write path)
 # ---------------------------------------------------------------------------
-Write-Step "Render smoke test (512px still + 2x2 grid)"
+Write-Step "Render smoke test (512px still + 2x2 grid + icons)"
 $smokeDir = Join-Path $root "out"
 New-Item -ItemType Directory -Path $smokeDir -Force | Out-Null
 
@@ -113,6 +113,14 @@ if ($LASTEXITCODE -ne 0) { Write-Error "smoke render failed"; exit 1 }
 
 & $exe --grid (Join-Path $smokeDir "verify_smoke_grid.png") --tile 256 --depth 8
 if ($LASTEXITCODE -ne 0) { Write-Error "smoke grid failed"; exit 1 }
+
+& $exe --icon --family gold --glyph crown --tier 2 --width 128 --height 128 `
+       --out (Join-Path $smokeDir "verify_smoke_icon.png")
+if ($LASTEXITCODE -ne 0) { Write-Error "icon smoke failed"; exit 1 }
+
+& $exe --gicon --bg glow --scheme tide --fg white --glyph eye `
+       --width 128 --height 128 --out (Join-Path $smokeDir "verify_smoke_gicon.png")
+if ($LASTEXITCODE -ne 0) { Write-Error "gicon smoke failed"; exit 1 }
 
 Write-Host ""
 Write-Host "PASS: all generators bit-exact, renders write clean." -ForegroundColor Green

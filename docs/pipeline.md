@@ -62,7 +62,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build_direct.ps1   # 全量
 .\bin\keenly.exe --help        # 全部旋钮
 ```
 
-## 三个 preset
+## 十二个 preset
 
 | preset | 色带 | 颗粒 | 用途 |
 |---|---|---|---|
@@ -72,10 +72,20 @@ powershell -ExecutionPolicy Bypass -File scripts\build_direct.ps1   # 全量
 | `ember` | 黑红 → 橙 → 金 | 中粗颗粒 + 强 halation | 火 / 熔岩 |
 | `ice` | 深蓝黑 → 钢蓝 → 冰白 | 细颗粒 + 柔 bloom | 冰川 / 玻璃 |
 | `moss` | 暗绿棕 → 苔绿 → 暖沙 | 中颗粒 | 森林 / 有机 |
+| `gold` | 墨黑 → 古金 → 亮金 | 粗金箔颗粒（scale 2.4） | 神圣 / 纹章 |
+| `violet` | 深紫黑 → 紫罗兰 → 淡紫 | 中细颗粒 | 暗影 / 夜幕 |
+| `aurora` | glow 光团：紫 / 青 / 绿 / 宝蓝 | 重胶片颗粒 | 柔光海报（glow 模式） |
+| `sepia` | glow 光团：褐 / 驼 / 奶油 / 琥珀 | 重胶片颗粒 | 暖色海报 |
+| `flare` | glow 光团：紫 / 品红 / 橙 / 金 | 重胶片颗粒 | 亮色海报 |
+| `tide` | glow 光团：深红 / 青 / 薄荷 / 紫 | 重胶片颗粒 | 冷色海报 |
+
+glow 系 preset 的 `pal.rgb` 不是调色 ramp 而是**光团颜色**，并自动切到
+`--mode glow`（除非显式给了 `--mode`）。
 
 CLI 显式参数优先于 preset 默认值（`keenly.cu` 用 set 位图跟踪）。
+`--film F` 覆盖颗粒为统一 35mm 规格，`--margin F` 加哑光白边。
 
-## 十六个场生成器（--mode）
+## 十七个场生成器（--mode）
 
 | mode | 数学 | 质感 |
 |---|---|---|
@@ -95,6 +105,7 @@ CLI 显式参数优先于 preset 默认值（`keenly.cu` 用 set 位图跟踪）
 | `aura` | 6 条 fBm 漂移四次方柔光带 + 拉伸细丝纹理 | **极光丝带**：地震仪辉光 |
 | `moire` | 双近源双极三角波环相乘 + 微扰 | **干涉涟漪**：op-art 波纹 |
 | `deco` | 哈希瓦片母题（1/4 圆/对角/圆点/弧）+ 2x2 细分 | **包豪斯**：平色拼贴 |
+| `glow` | 种子散布加性光团（上下环绕）+ fBm 形变 + 软赢家混色 + 扭曲暗池 | **柔光海报**：黑心弥散光 |
 
 全部是 `(x, y, seed)` 纯函数、纯多项式 + IEEE sqrt 运算（Worley 距离、
 整数幂高光）——CPU/GPU 逐位一致由此成立。高光的性格按模式分：

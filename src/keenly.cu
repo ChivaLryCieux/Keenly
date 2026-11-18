@@ -318,14 +318,7 @@ static inline float srgbEncode(float v)
 static void applyIconFamily(keenly::IconParams& ip, const std::string& name)
 {
     using namespace keenly;
-    PostParams post;   // icon post: fine grain, subtle vignette, no halation
-    post.grain = 0.030f;
-    post.grainScale = 1.3f;
-    post.halation = 0.0f;
-    post.bloom = 0.0f;
-    post.vignette = 0.20f;
-    post.splitTone = 0.15f;
-    post.saturation = 1.12f;
+    PostParams post;   // preset fills this first; icon overrides land below
 
     if (name == "blue") {
         applyPreset(ip.field, post, "ice", 0u);
@@ -375,7 +368,18 @@ static void applyIconFamily(keenly::IconParams& ip, const std::string& name)
                      name.c_str());
         std::exit(1);
     }
+    // Icon post overrides the preset's values on purpose: fine grain and a
+    // subtle vignette sized for small frames, and no halation - the SDF
+    // halo already does the glow job. (These used to sit BEFORE the preset
+    // call, which silently overwrote every one of them.)
     ip.post = post;
+    ip.post.grain = 0.030f;
+    ip.post.grainScale = 1.3f;
+    ip.post.halation = 0.0f;
+    ip.post.bloom = 0.0f;
+    ip.post.vignette = 0.20f;
+    ip.post.splitTone = 0.15f;
+    ip.post.saturation = 1.12f;
 }
 
 // Triangular-PDF dither before quantization: kills 8-bit banding in smooth
@@ -449,9 +453,11 @@ static bool writeImage(const std::string& path, int w, int h, int depth,
 }
 
 // RGBA float buffer -> PNG (sRGB on color, straight quantize on alpha).
-// Alpha is a coverage mask, not a color: no dither there, so icon edges
-// stay clean after engine compositing. Chunks are per-pixel (i += 4), so the
-// parallel split keeps alpha with its pixel.
+// RGB channels get the same TPDF dither as writeImage (icon backgrounds are
+// smooth gradients - banding shows). Alpha is a coverage mask, not a color:
+// no dither there, so icon edges stay clean after engine compositing.
+// Chunks are per-pixel (i += 4), so the parallel split keeps alpha with its
+// pixel.
 static bool writeImageRgba(const std::string& path, int w, int h,
                            const float* linear)
 {
@@ -465,9 +471,12 @@ static bool writeImageRgba(const std::string& path, int w, int h,
     parallelFor(n / 4, [&](size_t lo, size_t hi) {
         for (size_t pix = lo; pix < hi; ++pix) {
             const size_t i = pix * 4;
-            img[i + 0] = uint8_t(srgbEncode(linear[i + 0]) * 255.0f + 0.5f);
-            img[i + 1] = uint8_t(srgbEncode(linear[i + 1]) * 255.0f + 0.5f);
-            img[i + 2] = uint8_t(srgbEncode(linear[i + 2]) * 255.0f + 0.5f);
+            for (int c = 0; c < 3; ++c) {
+                float v = srgbEncode(linear[i + c])
+                        + tpdfDither(uint32_t(i + c), 1.0f / 255.0f);
+                v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+                img[i + c] = uint8_t(v * 255.0f + 0.5f);
+            }
             float a = linear[i + 3];
             a = a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
             img[i + 3] = uint8_t(a * 255.0f + 0.5f);
@@ -844,6 +853,11 @@ static bool runCheck(const keenly::FieldParams& p)
 
 // Regression entry point (--check-all): the bit-exact gate on every field
 // generator. This is what scripts\verify.ps1 runs after every change.
+// defined below: the icon gate reuses the same compositor as batch renders
+static bool runIconCheck(const keenly::IconParams& p);
+static void applyRainbowIcon(keenly::IconParams& ip, int bgMode, bool whiteFg,
+                             const std::string& scheme);
+
 static int runCheckAll()
 {
     static const char* kModes[17] = {"warp", "ridge", "bands", "frost",
@@ -866,6 +880,25 @@ static int runCheckAll()
         std::printf("mode %-6s ", kModes[m]);
         if (!runCheck(f)) allOk = false;
     }
+
+    // Icon shading path: the compositor (SDF glyph, halo, frame, mask, post
+    // tail) is a different kernel than fieldPixel - one family icon and one
+    // generic glow icon cover its two backgrounds.
+    {
+        keenly::IconParams ip;
+        applyIconFamily(ip, "blue");
+        ip.glyph = keenly::kGlyphSword;
+        ip.tier = 2;
+        std::printf("icon blue/sword/t2  ");
+        if (!runIconCheck(ip)) allOk = false;
+
+        keenly::IconParams gp;
+        applyRainbowIcon(gp, keenly::kBgGlow, true, "aurora");
+        gp.glyph = keenly::kGlyphFlame;
+        std::printf("icon glow/aurora    ");
+        if (!runIconCheck(gp)) allOk = false;
+    }
+
     std::printf(allOk ? "ALL MODES BIT-EXACT\n" : "GATE FAILED\n");
     return allOk ? 0 : 1;
 }
@@ -1073,10 +1106,17 @@ static float renderIconToHost(const keenly::IconParams& p, int w, int h,
 {
     const size_t n = size_t(w) * size_t(h) * 4;
     host.resize(n);
+    // Size-adaptive grain (icons_plan 1): clump size scales with the icon,
+    // and at 32px the amplitude halves too - full-strength grain on a tiny
+    // tile reads as noise, not texture.
+    keenly::IconParams ps = p;
+    const int minDim = (w < h ? w : h);
+    ps.post.grainScale *= float(minDim) / 128.0f;
+    if (minDim <= 32) ps.post.grain *= 0.5f;
     float* dBuf = scratch.ensure(n);
     GpuTimer timer;
     timer.start();
-    keenly::renderIconGpu(dBuf, w, h, p);
+    keenly::renderIconGpu(dBuf, w, h, ps);
     const float ms = timer.stop();
     CUDA_CHECK(cudaMemcpy(host.data(), dBuf, n * sizeof(float), cudaMemcpyDeviceToHost));
     return ms;
@@ -1138,8 +1178,11 @@ static int runIcon(const Args& args)
     } else {
         applyIconFamily(ip, args.family);
         ip.tier = args.tier;
-        ip.field.seed = 7u;
-        ip.post.seed = 7u;
+        // explicit --seed picks the icon variant; default keeps the
+        // established seed-7 look for backwards-compatible batches
+        const unsigned sd = (args.postSet & kSetSeed) ? args.field.seed : 7u;
+        ip.field.seed = sd;
+        ip.post.seed = sd;
     }
     ip.glyph = glyph;
     ip.roundedMask = args.maskRound;

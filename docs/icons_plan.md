@@ -3,7 +3,10 @@
 战棋游戏技能图标生产线：小尺寸、大批量、四主色系 + 辅助色，
 矩形 / 圆角矩形遮罩，单进程批量出图，位级门禁继续成立。
 
-状态：**已定案**（决策记录见第 7 节），待开工 Phase 1。
+状态：Phase 1-4 已落地（含 `--check-all` 图标覆盖与 verify 图标冒烟）；
+另有通用图标管线（`--gicon`，rainbow/glow 背景 + 平涂前景，
+`--rainbow-demo` / `--glow-demo`）。剩余：Phase 2 manifest 批量产、
+Phase 5 可选增强。
 
 ---
 
@@ -31,8 +34,9 @@
 
 **尺寸自适应的后期参数**（重要细节）：
 - `grainScale` 随尺寸线性缩放：`grainScale *= size / 128`（128px 上 2.5 的
-  聚团，在 64px 上应是 1.25，否则颗粒相对图标过大）；
-- `grain` 幅度在 32px 档减半（小图上颗粒会糊成噪点）；
+  聚团，在 64px 上应是 1.25，否则颗粒相对图标过大）——已实现
+  （`renderIconToHost` 统一按 minDim 缩放）；
+- `grain` 幅度在 32px 档减半（小图上颗粒会糊成噪点）——已实现（同上）；
 - `view / warp / relief` 不随尺寸变（几何本身分辨率无关）。
 
 ---
@@ -143,13 +147,14 @@ seed 纪律：`seed = hash(family, glyph, tier, variant)`，manifest 里显式�
 
 ### Phase 3 — 预览与调优
 - 每色系 contact sheet（N 宫格，扩展现有 runGrid）；
-- 统计脚本（沿用 `out/grid_stats.py` 思路）：符号-背景对比度、直方图形状、
+- 统计脚本（沿用 `tools/grid_stats.py` 思路）：符号-背景对比度、直方图形状、
   64px 缩略可读性抽查；
 - 每轮调整记入 `docs/experiments.md`（项目纪律）。
 
 ### Phase 4 — 门禁升级
-- `--check-all` 覆盖 icon 着色路径（含 SDF 组合，要求 maxAbs == 0）；
-- `verify.ps1` 增加图标冒烟（1 张 × 4 色系 + 1 张圆角遮罩 + 1 张直角遮罩）。
+- `--check-all` 覆盖 icon 着色路径（含 SDF 组合，要求 maxAbs == 0）——
+  已实现：family（blue/sword/t2）+ 通用（glow/aurora）各一查；
+- `verify.ps1` 增加图标冒烟（1 张 family + 1 张 gicon，均圆角遮罩）——已实现。
 
 ### Phase 5 — 可选增强
 - 图集打包：4096² atlas + JSON 框数据（引擎侧免裁剪）；

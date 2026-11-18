@@ -138,8 +138,8 @@ __host__ __device__ inline float distf(float ax, float ay, float bx, float by)
 }
 
 // Height of one pulsar-wave row (kFieldWaves): a low rolling baseline plus
-// sharp spikes, in row-local units (1 = one row band). Capped under 2 so a
-// peak can only reach into the band above - the pixel loop scans rows r..r+1.
+// sharp spikes, in row-local units (1 = one row band). Capped at 2.6 so a
+// peak can overshoot two bands - the pixel loop scans rows r..r+2.
 __host__ __device__ inline float waveProfile(float px, int row, const FieldParams& p)
 {
     const float fj = float(row);

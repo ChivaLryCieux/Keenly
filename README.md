@@ -77,7 +77,7 @@ tools/
 噪声 (5 octave fBm，每 octave 旋转 14°)
   → 二级域扭曲 (two-level domain warp)          ← 有机流动感
   → 分层构图（宏观明暗布局 + 色相漂移 + 细节层）   ← 「画」与「噪声贴图」的区别
-  → 调色板 (6 stop) + 双尺度浮雕光照
+  → 调色板 (≤8 stop) + 双尺度浮雕光照
   → 后期链 (线性光):
       halation 红晕 + bloom → split-tone 青影橙光 → vividness
       → 胶片颗粒 (双尺度聚团 + 三层色差) → 暗角 → ACES
@@ -91,7 +91,7 @@ tools/
 
 ## 生成器 × 调色板
 
-**16 个场生成器**（`--mode`）：
+**17 个场生成器**（`--mode`）：
 
 | mode | 质感 | 数学 |
 |---|---|---|
@@ -111,11 +111,17 @@ tools/
 | `aura` | 极光丝带 / 地震仪辉光 | fBm 漂移的柔光带 + 细丝纹理 |
 | `moire` | 双源干涉涟漪（op-art） | 两组圆环波乘积 |
 | `deco` | 包豪斯拼贴 | 哈希瓦片几何母题 + 细缝 |
+| `glow` | 柔光海报：黑心暗池 + 上下环绕色团 | 种子散布加性光团 + 软赢家混色 |
 
-**8 个调色板**（`--preset`）：`cinema`（青橙）、`dusk`（靛蓝-品红-珊瑚）、
+`glow` 模式配合 `--margin`（哑光白边）出「Daily color scheme」式海报。
+
+**12 个调色板**（`--preset`）：`cinema`（青橙）、`dusk`（靛蓝-品红-珊瑚）、
 `mono`（灰阶）、`ember`（火）、`ice`（冰川）、`moss`（森林）、
-`gold`（神圣金）、`violet`（暗紫）。
-preset 附带各自的颗粒/光晕默认值，CLI 显式参数优先。
+`gold`（神圣金）、`violet`（暗紫）；
+glow 四方案：`aurora`（紫青绿）、`sepia`（暖棕奶油）、`flare`（紫粉橙）、
+`tide`（深红青）。preset 附带各自的颗粒/光晕默认值，CLI 显式参数优先。
+
+**胶片滤镜** `--film F`：在任何 preset/模式上强制统一 35mm 聚团颗粒规格。
 
 **质感旋钮**：`--grain` / `--grain-scale`（35mm 聚团 ↔ 磨砂细颗粒）、
 `--halation`（胶片高光红晕）、`--split-tone`（青影橙光）、`--saturation`、
@@ -137,19 +143,26 @@ preset 附带各自的颗粒/光晕默认值，CLI 显式参数优先。
 | 边框 | `--tier 1..4`：素描边 → 双环角钉 → 菱形角饰+外发光 → 宝石嵌角（顺带做稀有度） |
 | 尺寸 | 128×128 主力 + 64×64 直渲（纯函数分辨率无关，直渲比缩放锐）；`--mask round\|rect`、`--radius` 圆角三档 |
 
-图标输出 **8-bit RGBA**（alpha = 遮罩覆盖率，1px AA）。可读性纪律：符号笔画
-≥5px@128、亮描边、背景压暗、符号区颗粒减弱。量产方案（配额 160 张、manifest
-驱动）见 [docs/icons_plan.md](docs/icons_plan.md)，质检脚本
+图标输出 **8-bit RGBA**（alpha = 遮罩覆盖率，1px AA；RGB 通道带 TPDF
+dither）。可读性纪律：符号笔画 ≥5px@128、亮描边、背景压暗、符号区颗粒减弱、
+颗粒聚团随尺寸线性缩放（64px 减半、32px 再半幅）。量产方案（配额 160 张、
+manifest 驱动）见 [docs/icons_plan.md](docs/icons_plan.md)，质检脚本
 `scripts\icon_stats.py`。
+
+**通用图标管线**（`--gicon`）：不走色系家族，背景改为程序化风格
+（`--bg fluid|swirl|bands|rings|mosaic|glow`，glow 复用海报的
+`--scheme aurora|sepia|flare|tide`），前景为纯白/纯黑平涂剪影，`--seed`
+即变体 id、`--tier 0` 无框。批量：`--rainbow-demo` / `--glow-demo`。
 
 ---
 
 ## 工程纪律
 
 **位级门禁**。Keenly 用严格 IEEE 数学编译（`--fmad=false`，不加 fast-math），
-所以 GPU 渲染与 CPU 参考逐位一致——`keenly --check-all` 对全部 8 个生成器
-（含 Gray-Scott 迭代模拟）要求 `maxAbs == 0`，图标合成路径同样过门禁
-（单张逐张；demo 批量按色系抽样），`scripts\verify.ps1` 每次改动后跑。这不是过度工程：
+所以 GPU 渲染与 CPU 参考逐位一致——`keenly --check-all` 对全部 17 个场生成器
+（含 Gray-Scott 迭代模拟）加图标合成路径（family + 通用 glow 各一）要求
+`maxAbs == 0`，`scripts\verify.ps1` 每次改动后跑（含 icon/gicon 冒烟）。
+这不是过度工程：
 它同时保证了 seed 系列的可复现性、未来分块渲染的无缝性、印刷母版的可重渲性。
 历史教训（实验 1/2/3）都写在 [docs/experiments.md](docs/experiments.md) 里——
 fast-math 的误差预算模型被 bands 的 fold 增益（126 倍）击穿后，才换成零误差的编译约定。

@@ -3,7 +3,7 @@
 #   1. glyph-vs-background contrast: icon must not be flat
 #   2. value range: dark background AND bright glyph both present
 #   3. edge population: the stroke/frame must be visible
-# Usage: python out\icon_stats.py out\icons\blue\blue_sword.png [...]
+# Usage: python scripts\icon_stats.py out\icons\blue\blue_sword.png [...]
 import struct, sys, zlib
 
 
@@ -93,7 +93,7 @@ def metrics(path):
 def main():
     paths = sys.argv[1:]
     if not paths:
-        print("usage: python out\\icon_stats.py <icon.png> [...]")
+        print("usage: python scripts\\icon_stats.py <icon.png> [...]")
         return 1
     bad = 0
     for p in paths:
