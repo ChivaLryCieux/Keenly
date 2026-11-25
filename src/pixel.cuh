@@ -5,8 +5,10 @@
 //
 // This is the single source of truth for the art math. The GPU kernel
 // (render.cu) and the CPU reference (reference.cu) both call fieldPixel(),
-// so the verify gate compares the two *execution paths* with a tight relL2
-// budget instead of drifting apart through duplicated code.
+// so the verify gate compares the two *execution paths* (bit-exact,
+// maxAbs == 0) instead of drifting apart through duplicated code.
+//
+// Transcendentals are banned here - see the CONTRACT block in noise.cuh.
 //
 // Coordinates are resolution-independent: the pattern spans `view` noise
 // units across the image height, so 512px previews and the full A1 render

@@ -37,6 +37,9 @@ struct Args
     bool check = true;
     bool post = true;
     bool checkAll = false;  // run the gate on every generator and exit
+    bool listModes = false; // print the generator list and exit
+    bool cpu = false;       // render on the CPU instead of the GPU (--cpu)
+    int  cpuThreads = 0;    // 0 = hardware_concurrency
     unsigned postSet = 0;  // which params were explicitly set on the CLI
     std::string preset = "cinema";
     std::string grid;      // non-empty: render the 3x3 showcase to this path
@@ -485,6 +488,38 @@ static bool writeImageRgba(const std::string& path, int w, int h,
     return keenly::writePng(path, w, h, 8, img.data(), 4);
 }
 
+// ---- generator table -------------------------------------------------------
+// Single source of truth for --mode names. Index == FieldMode enum value
+// (pixel.cuh), so parseArgs, printUsage and --check-all all derive from this
+// one array: a new generator cannot be added to one place and forgotten in
+// another, and the docs can quote a count that is verifiable here.
+static const char* const kFieldModeNames[] = {
+    "warp", "ridge", "bands", "frost", "facet", "prism", "liquid", "turing",
+    "agate", "waves", "truchet", "shards", "dots", "aura", "moire", "deco",
+    "glow"
+};
+static const int kFieldModeCount =
+    int(sizeof(kFieldModeNames) / sizeof(kFieldModeNames[0]));
+
+// Comma/pipe joined mode list, for usage and error text.
+static std::string fieldModeList()
+{
+    std::string s;
+    for (int m = 0; m < kFieldModeCount; ++m) {
+        if (m) s += '|';
+        s += kFieldModeNames[m];
+    }
+    return s;
+}
+
+// Case-sensitive mode name -> enum value, -1 when unknown.
+static int modeFromName(const char* name)
+{
+    for (int m = 0; m < kFieldModeCount; ++m)
+        if (std::strcmp(name, kFieldModeNames[m]) == 0) return m;
+    return -1;
+}
+
 static void printUsage()
 {
     std::printf(
@@ -496,9 +531,8 @@ static void printUsage()
         "  --out    P     output PNG path         (default out/field.png)\n"
         "  --preset P     mono|cinema|dusk|ember|ice|moss|gold|violet\n"
         "                 aurora|sepia|flare|tide       (default cinema)\n"
-        "  --mode   M     warp|ridge|bands|frost|facet|prism|liquid|turing|agate\n"
-        "                 waves|truchet|shards|dots|aura|moire|deco|glow\n"
-        "                                                    (default warp)\n"
+        "  --mode   M     one of the field generators below      (default warp)\n"
+        "                 see `keenly --modes` for the live list\n"
         "  --film   F     film-filter grain spec, F = grain strength multiplier\n"
         "                 (overrides preset grain; works on any style)\n"
         "  --margin F     matte white poster frame, fraction of height\n"
@@ -525,6 +559,10 @@ static void printUsage()
         "  --no-post      skip grain/glow/vignette/tonemap (raw field)\n"
         "  --no-check     skip the CPU reference gate\n"
         "  --check-all    run the bit-exact gate on every generator, then exit\n"
+        "  --modes        print the generator list (--mode values) and exit\n"
+        "  --cpu          render on the CPU instead of the GPU (no CUDA device\n"
+        "                 needed; bit-identical output, ~20x slower)\n"
+        "  --cpu-threads N  worker threads for --cpu (default: all cores)\n"
         "  --grid   P     render a 3x3 style showcase grid to PNG path P\n"
         "  --tile   N     showcase cell size in pixels (default 800)\n"
         "icon mode (RGBA skill icons):\n"
@@ -582,29 +620,13 @@ static bool parseArgs(int argc, char** argv, Args& a)
         } else if (key == "--mode") {
             const char* v = next("--mode");
             if (!v) return false;
-            if (std::strcmp(v, "warp") == 0)        a.field.mode = 0;
-            else if (std::strcmp(v, "ridge") == 0)  a.field.mode = 1;
-            else if (std::strcmp(v, "bands") == 0)  a.field.mode = 2;
-            else if (std::strcmp(v, "frost") == 0)  a.field.mode = 3;
-            else if (std::strcmp(v, "facet") == 0)  a.field.mode = 4;
-            else if (std::strcmp(v, "prism") == 0)  a.field.mode = 5;
-            else if (std::strcmp(v, "liquid") == 0) a.field.mode = 6;
-            else if (std::strcmp(v, "turing") == 0) a.field.mode = 7;
-            else if (std::strcmp(v, "agate") == 0)   a.field.mode = 8;
-            else if (std::strcmp(v, "waves") == 0)   a.field.mode = 9;
-            else if (std::strcmp(v, "truchet") == 0) a.field.mode = 10;
-            else if (std::strcmp(v, "shards") == 0)  a.field.mode = 11;
-            else if (std::strcmp(v, "dots") == 0)    a.field.mode = 12;
-            else if (std::strcmp(v, "aura") == 0)    a.field.mode = 13;
-            else if (std::strcmp(v, "moire") == 0)   a.field.mode = 14;
-            else if (std::strcmp(v, "deco") == 0)    a.field.mode = 15;
-            else if (std::strcmp(v, "glow") == 0)    a.field.mode = 16;
-            else {
-                std::fprintf(stderr, "unknown mode: %s "
-                             "(use warp|ridge|bands|frost|facet|prism|liquid|turing"
-                             "|agate|waves|truchet|shards|dots|aura|moire|deco|glow)\n", v);
+            const int mode = modeFromName(v);
+            if (mode < 0) {
+                std::fprintf(stderr, "unknown mode: %s (use %s)\n", v,
+                             fieldModeList().c_str());
                 return false;
             }
+            a.field.mode = mode;
             a.postSet |= kSetMode;
         } else if (key == "--bands") {
             const char* v = next("--bands");
@@ -723,6 +745,14 @@ static bool parseArgs(int argc, char** argv, Args& a)
             a.check = false;
         } else if (key == "--check-all") {
             a.checkAll = true;
+        } else if (key == "--modes") {
+            a.listModes = true;
+        } else if (key == "--cpu") {
+            a.cpu = true;
+        } else if (key == "--cpu-threads") {
+            const char* v = next("--cpu-threads");
+            if (!v) return false;
+            a.cpuThreads = std::atoi(v);
         } else if (key == "--icon") {
             a.iconMode = true;
         } else if (key == "--family") {
@@ -828,26 +858,174 @@ static bool parseArgs(int argc, char** argv, Args& a)
     return true;
 }
 
+// Synthetic post-chain check.
+//
+// Why this exists: comparing post on a real field render is necessary but NOT
+// sufficient. If a generator happens to produce no pixels above the bright
+// pass knee (warp does exactly that at gate size), the halation/bloom terms
+// are all multiplied by zero and the post stage passes vacuously - a broken
+// blur or a wrong half-res offset would go unnoticed. (Measured: injecting a
+// 1% halation error was caught on ridge but reported 0 on warp.)
+//
+// So this check feeds a deliberately HDR input: a linear ramp plus bright
+// blobs, which guarantees the bright pass has energy, the blur has spread,
+// the vignette and grain vary, and the ACES shoulder is exercised. It also
+// asserts the coverage explicitly, so the check cannot silently go vacuous
+// again if the post defaults change.
+static bool runPostCheck()
+{
+    const int w = 320, h = 180;
+    const size_t n = size_t(w) * size_t(h) * 3;
+    std::vector<float> src(n);
+
+    // Ramp (0 .. 1.6 in luminance) + two bright blobs above the 1.1 knee.
+    // Values > 1.0 are legal here: the field buffer is linear light and the
+    // specular path really does emit > 1 in highlights.
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const float u = float(x) / float(w - 1);
+            const float v = float(y) / float(h - 1);
+            float c[3] = {1.60f * u, 1.20f * v, 0.90f * (1.0f - 0.5f * (u + v))};
+            const float dx1 = u - 0.28f, dy1 = v - 0.35f;
+            const float dx2 = u - 0.72f, dy2 = v - 0.68f;
+            const float g1 = 2.60f * (1.0f - 60.0f * (dx1 * dx1 + dy1 * dy1));
+            const float g2 = 2.20f * (1.0f - 45.0f * (dx2 * dx2 + dy2 * dy2));
+            const float g = (g1 > 0.0f ? g1 : 0.0f) + (g2 > 0.0f ? g2 : 0.0f);
+            float* p = src.data() + (size_t(y) * w + x) * 3;
+            p[0] = c[0] + g;
+            p[1] = c[1] + 0.85f * g;
+            p[2] = c[2] + 0.70f * g;
+        }
+    }
+
+    keenly::PostParams post;
+    post.seed = 4242u;
+    post.exposure = 1.0f;
+    post.grain = 0.05f;
+    post.grainScale = 2.5f;
+    post.halation = 0.45f;
+    post.bloom = 0.20f;
+    post.vignette = 0.40f;
+    post.splitTone = 0.45f;
+    post.saturation = 1.15f;
+
+    std::vector<float> ref(n), gpu(n);
+    keenly::renderPostCpu(ref.data(), src.data(), w, h, post);
+
+    float* dSrc = nullptr;
+    float* dOut = nullptr;
+    CUDA_CHECK(cudaMalloc(&dSrc, n * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dOut, n * sizeof(float)));
+    CUDA_CHECK(cudaMemcpy(dSrc, src.data(), n * sizeof(float), cudaMemcpyHostToDevice));
+    keenly::renderPostGpu(dOut, dSrc, w, h, post);
+    CUDA_CHECK(cudaMemcpy(gpu.data(), dOut, n * sizeof(float), cudaMemcpyDeviceToHost));
+
+    const DiffStats d = compareArrays(gpu.data(), ref.data(), n);
+
+    // Thread-count invariance for the post chain: the --cpu backend runs this
+    // stage with many threads, so prove a row split reproduces the serial
+    // result exactly. (Rows are pure functions over read-only inputs, so this
+    // must hold; if it ever fails, someone introduced a cross-row dependency.)
+    std::vector<float> threaded(n);
+    keenly::renderPostCpu(threaded.data(), src.data(), w, h, post, 7);
+    const DiffStats dt = compareArrays(threaded.data(), ref.data(), n);
+
+    // Coverage assertion: the synthetic input must actually drive the chain.
+    // If the output is a flat constant, the check proved nothing.
+    float lo = 1e30f, hi = -1e30f;
+    for (size_t i = 0; i < n; ++i) {
+        lo = std::min(lo, ref[i]);
+        hi = std::max(hi, ref[i]);
+    }
+    const bool covered = (hi - lo) > 0.05f;
+
+    std::printf("post   check  : relL2 %.3e  maxAbs %.3e  (synthetic HDR, expect 0)\n",
+                d.relL2, d.maxAbs);
+    std::printf("        split : relL2 %.3e  maxAbs %.3e  (7 threads vs serial)\n",
+                dt.relL2, dt.maxAbs);
+    std::printf("        coverage: output range [%.3f, %.3f] %s\n", lo, hi,
+                covered ? "ok" : "VACUOUS - post stage saw a constant image");
+
+    CUDA_CHECK(cudaFree(dSrc));
+    CUDA_CHECK(cudaFree(dOut));
+    return d.maxAbs == 0.0 && dt.maxAbs == 0.0 && covered;
+}
+
 // CPU reference gate: same pixel shader, serial vs parallel execution.
 // Bit-exact pass condition (maxAbs == 0), see file header for why this is
 // achievable and what breaking it means.
+//
+// Two stages are checked, because the delivered PNG contains both:
+//   1. field  - the pixel shader output
+//   2. post   - bright pass + gaussian + compose (halation/bloom/grain/
+//               vignette/ACES). Until this stage had a reference, a blur
+//               index bug or a half-res sampling offset would have shipped
+//               silently: the gate only ever compared the field.
 static bool runCheck(const keenly::FieldParams& p)
 {
     const int w = 320, h = 180;
     const size_t n = size_t(w) * size_t(h) * 3;
-    std::vector<float> ref(n), gpu(n);
+    std::vector<float> refField(n), gpuField(n);
 
-    keenly::renderFieldCpu(ref.data(), w, h, p);
+    keenly::renderFieldCpu(refField.data(), w, h, p);
 
     float* dBuf = nullptr;
     CUDA_CHECK(cudaMalloc(&dBuf, n * sizeof(float)));
     keenly::renderFieldGpu(dBuf, w, h, p);
-    CUDA_CHECK(cudaMemcpy(gpu.data(), dBuf, n * sizeof(float), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaFree(dBuf));
+    CUDA_CHECK(cudaMemcpy(gpuField.data(), dBuf, n * sizeof(float), cudaMemcpyDeviceToHost));
 
-    const DiffStats d = compareArrays(gpu.data(), ref.data(), n);
-    std::printf("check  : relL2 %.3e  maxAbs %.3e  (GPU vs CPU, %dx%d, expect 0)\n",
-                d.relL2, d.maxAbs, w, h);
+    const DiffStats dField = compareArrays(gpuField.data(), refField.data(), n);
+    std::printf("check  : field relL2 %.3e  maxAbs %.3e", dField.relL2, dField.maxAbs);
+
+    // ---- post chain on this generator's own field -------------------------
+    // Catches field->post plumbing (exposure, seed, buffer handoff). Note
+    // this can be near-vacuous on generators with no highlights; the
+    // synthetic runPostCheck below is what guarantees real coverage.
+    keenly::PostParams post;
+    post.seed = p.seed;
+    post.exposure = 1.0f;
+    post.grain = 0.05f;
+    post.grainScale = 2.5f;
+    post.halation = 0.35f;
+    post.bloom = 0.12f;
+    post.vignette = 0.35f;
+    post.splitTone = 0.35f;
+    post.saturation = 1.12f;
+
+    std::vector<float> refPost(n), gpuPost(n);
+    keenly::renderPostCpu(refPost.data(), refField.data(), w, h, post);
+
+    float* dOut = nullptr;
+    CUDA_CHECK(cudaMalloc(&dOut, n * sizeof(float)));
+    keenly::renderPostGpu(dOut, dBuf, w, h, post);
+    CUDA_CHECK(cudaMemcpy(gpuPost.data(), dOut, n * sizeof(float), cudaMemcpyDeviceToHost));
+
+    const DiffStats dPost = compareArrays(gpuPost.data(), refPost.data(), n);
+    std::printf("  post relL2 %.3e  maxAbs %.3e  (%dx%d, expect 0)\n",
+                dPost.relL2, dPost.maxAbs, w, h);
+
+    CUDA_CHECK(cudaFree(dBuf));
+    CUDA_CHECK(cudaFree(dOut));
+    return dField.maxAbs == 0.0 && dPost.maxAbs == 0.0;
+}
+
+// CPU split determinism: the --cpu backend renders with row bands across
+// threads, so prove that any split reproduces the serial reference exactly.
+// If this ever fires, someone introduced cross-pixel state into the shader
+// (a thread-local RNG, an accumulator) and the thread count became visible
+// in the output.
+static bool runCpuSplitCheck(const keenly::FieldParams& p)
+{
+    const int w = 320, h = 180;
+    const size_t n = size_t(w) * size_t(h) * 3;
+    std::vector<float> serial(n), threaded(n);
+
+    keenly::renderFieldCpu(serial.data(), w, h, p);
+    keenly::renderFieldCpuParallel(threaded.data(), w, h, p, 7);  // odd count on purpose
+
+    const DiffStats d = compareArrays(threaded.data(), serial.data(), n);
+    std::printf("check  : cpu-split relL2 %.3e  maxAbs %.3e  (7 threads vs serial, expect 0)\n",
+                d.relL2, d.maxAbs);
     return d.maxAbs == 0.0;
 }
 
@@ -860,12 +1038,8 @@ static void applyRainbowIcon(keenly::IconParams& ip, int bgMode, bool whiteFg,
 
 static int runCheckAll()
 {
-    static const char* kModes[17] = {"warp", "ridge", "bands", "frost",
-                                     "facet", "prism", "liquid", "turing",
-                                     "agate", "waves", "truchet", "shards",
-                                     "dots", "aura", "moire", "deco", "glow"};
     bool allOk = true;
-    for (int m = 0; m < 17; ++m) {
+    for (int m = 0; m < kFieldModeCount; ++m) {
         keenly::FieldParams f;
         keenly::PostParams p;
         applyPreset(f, p, "cinema", 0u);
@@ -877,9 +1051,17 @@ static int runCheckAll()
             f.rdRes = 96;
             f.rdIters = 200;
         }
-        std::printf("mode %-6s ", kModes[m]);
+        std::printf("mode %-6s ", kFieldModeNames[m]);
         if (!runCheck(f)) allOk = false;
+        // The --cpu backend renders with row bands; prove the split is
+        // invisible on every generator, not just the default one.
+        if (!runCpuSplitCheck(f)) allOk = false;
     }
+
+    // Synthetic HDR post check: guarantees the post stage has real energy on
+    // input, so a broken blur or half-res offset cannot hide behind a
+    // highlight-free generator.
+    if (!runPostCheck()) allOk = false;
 
     // Icon shading path: the compositor (SDF glyph, halo, frame, mask, post
     // tail) is a different kernel than fieldPixel - one family icon and one
@@ -1538,12 +1720,89 @@ static int runGlowDemo(const Args& args)
     return allOk ? 0 : 1;
 }
 
+// Render one still on the CPU (--cpu). Same shader, same post chain, same
+// PNG encoder as the GPU path - the only difference is where the pixels are
+// computed. Output is bit-identical to the GPU render (that is what the gate
+// asserts), so this is the backend for machines without an NVIDIA device and
+// the way to prove the "same seed, same image, anywhere" claim.
+static int runStillCpu(const Args& args, const keenly::FieldParams& field,
+                       const keenly::PostParams& postIn)
+{
+    const int w = args.width, h = args.height;
+    const size_t pixels = size_t(w) * size_t(h);
+    const size_t n = pixels * 3;
+
+    int threads = args.cpuThreads;
+    if (threads <= 0) {
+        threads = int(std::thread::hardware_concurrency());
+        if (threads <= 0) threads = 1;
+    }
+    std::printf("cpu    : %d thread(s)\n", threads);
+
+    std::vector<float> hField(n);
+    auto t0 = std::chrono::steady_clock::now();
+    keenly::renderFieldCpuParallel(hField.data(), w, h, field, threads);
+    const float msField =
+        std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("field  : %.3f ms  (%.1f Mpixel/s)\n", msField,
+                pixels / (double(msField) * 1e3));
+
+    std::vector<float> hOut(n);
+    const float* src = hField.data();
+    if (args.post) {
+        keenly::PostParams post = postIn;
+        post.seed = field.seed;
+        t0 = std::chrono::steady_clock::now();
+        keenly::renderPostCpu(hOut.data(), hField.data(), w, h, post, threads);
+        const float msPost =
+            std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        std::printf("post   : %.3f ms  (grain %.3f  halation %.2f  bloom %.2f  vignette %.2f  split %.2f)\n",
+                    msPost, post.grain, post.halation, post.bloom, post.vignette,
+                    post.splitTone);
+        src = hOut.data();
+    }
+
+    const auto tWrite = std::chrono::steady_clock::now();
+    const bool wrote = writeImage(args.out, w, h, args.depth, src);
+    const float msWrite =
+        std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - tWrite).count();
+    if (!wrote) {
+        std::fprintf(stderr, "failed to write %s\n", args.out.c_str());
+        return 1;
+    }
+    std::printf("write  : %.3f ms  (sRGB encode + dither + stream to disk)\n", msWrite);
+    std::printf("wrote  : %s  (%d-bit)\n", args.out.c_str(), args.depth);
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     Args args;
     if (!parseArgs(argc, argv, args)) {
         printUsage();
         return 1;
+    }
+
+    if (args.listModes) {
+        for (int m = 0; m < kFieldModeCount; ++m)
+            std::printf("%d  %s\n", m, kFieldModeNames[m]);
+        return 0;
+    }
+
+    // --cpu renders the still pipeline without touching CUDA at all, so the
+    // device query has to stay behind this branch: on a machine with no
+    // NVIDIA driver cudaGetDeviceProperties would abort before we get here.
+    if (args.cpu) {
+        applyPreset(args.field, args.postp, args.preset, args.postSet);
+        if (args.film >= 0.0f) {
+            args.postp.grain = 0.055f * args.film;
+            args.postp.grainScale = 2.4f;
+        }
+        std::printf("render : %dx%d  preset %s  mode %s  seed %u  view %.2f  warp %.2f  octaves %d\n",
+                    args.width, args.height, args.preset.c_str(),
+                    kFieldModeNames[args.field.mode], args.field.seed,
+                    args.field.view, args.field.warp, args.field.octaves);
+        return runStillCpu(args, args.field, args.postp);
     }
 
     cudaDeviceProp prop{};
@@ -1575,9 +1834,10 @@ int main(int argc, char** argv)
         args.postp.grain = 0.055f * args.film;
         args.postp.grainScale = 2.4f;
     }
-    std::printf("render : %dx%d  preset %s  mode %d  seed %u  view %.2f  warp %.2f  octaves %d\n",
-                args.width, args.height, args.preset.c_str(), args.field.mode,
-                args.field.seed, args.field.view, args.field.warp, args.field.octaves);
+    std::printf("render : %dx%d  preset %s  mode %s  seed %u  view %.2f  warp %.2f  octaves %d\n",
+                args.width, args.height, args.preset.c_str(),
+                kFieldModeNames[args.field.mode], args.field.seed,
+                args.field.view, args.field.warp, args.field.octaves);
 
     if (args.check && !runCheck(args.field)) {
         std::fprintf(stderr, "CHECK FAILED: GPU disagrees with the CPU reference\n");

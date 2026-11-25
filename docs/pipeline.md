@@ -36,9 +36,9 @@ fBm 梯度噪声 (5 octave，每 octave 旋转 14°，消网格对齐伪影)
 src/
   keenly.cu      CLI + 位级门禁 + 九宫格 showcase + PNG 写出
   noise.cuh      整数哈希、8 方向梯度噪声、fBm、ridged fBm、Worley、powi
-  pixel.cuh      调色板、分层构图、16 个场生成器（GPU/CPU 共享的像素着色）
+  pixel.cuh      调色板、分层构图、17 个场生成器（GPU/CPU 共享的像素着色）
   render.h/.cu   field kernel + post 链（bright/blur/compose）
-  reference.cu   CPU 参考（串行遍历，同 pixel shader）
+  reference.cu   CPU 实现：串行参考（门禁用）+ 多线程后端（--cpu 用）
   png_writer.h   零依赖流式 PNG 写出（RGB 8/16-bit，stored DEFLATE）
   compare.h      DiffStats / compareArrays（门禁比较）
   cuda_utils.h   CUDA_CHECK + GpuTimer
@@ -171,14 +171,37 @@ view/warp/contrast/relief 覆盖）。
 各跑一遍，要求 **位级全等（maxAbs == 0）**，否则 exit 1。
 
 - art 目标编译**严格 IEEE 数学**（`--fmad=false`，不加 fast-math），所以
-  GPU 输出与 CPU 参考逐位一致（四个生成器实测 relL2 = 0.000e+00）。
+  GPU 输出与 CPU 参考逐位一致（全部 17 个生成器实测 relL2 = 0.000e+00）。
   matmul/conv 仍用 fast-math 追速度——各取所需，flags 是 per-target 的。
 - 历史教训（见 experiments.md 实验 1/2/3）：fast-math 时代门禁只能给预算
   （1e-4 → 2e-4），而 bands 的折叠结构把舍入差放大 126 倍直接击穿预算——
   换 IEEE 之后预算模型整个不需要了，位级全等是最强的正确性声明。
-- post 链（颗粒/模糊/暗角/调色）不在数值门禁内——它们的效果用统计验证：
-  高频残差（颗粒）、暗角 A/B（边角 ×0.85、中心 ×1.0）、行内唯一值数（色带）、
-  饱和度变化（split-tone 生效验证）。
+
+### 门禁覆盖范围（三层）
+
+1. **field shader**：17 个生成器 + 图标合成路径（family / 通用 glow 各一）。
+2. **post 链**：bright → blur → compose（halation/bloom/颗粒/暗角/ACES）现在
+   有 CPU 参考（`renderPostCpu`），纳入 `maxAbs == 0`。
+   **关键细节**：只在真实画面上比对不够。某些生成器（warp 就是）在门禁尺寸
+   下没有像素超过 bright 阈值，halation/bloom 项全被乘 0，后期阶段等于空转。
+   实测：故意注入 1% halation 误差，ridge 抓到、warp 报 0。所以另有一条
+   **合成 HDR 检查**——线性渐变 + 两个超阈值亮团作输入，并断言输出值域
+   非恒定（`coverage: output range ... ok`）。空转的门禁比没有门禁更危险，
+   因为它给的是假信心。
+3. **CPU 行切分**：`--cpu` 把行带分给多线程，门禁用 7 线程与串行参考比对，
+   证明任意切分逐位相同。失败即意味着 shader 里混入了跨像素状态。
+
+### 端到端奇偶校验
+
+门禁比的是浮点 buffer，`verify.ps1` 另外比 **GPU 与 `--cpu` 的 PNG SHA256**，
+覆盖 field + post + sRGB 编码 + TPDF dither 的完整链路。
+
+### 审美统计（保留，与数值门禁互补）
+
+颗粒/暗角/色带的**效果**仍用统计看：高频残差（颗粒）、暗角 A/B
+（边角 ×0.85、中心 ×1.0）、行内唯一值数（色带）、饱和度变化（split-tone）。
+数值门禁保证「同一输入同一输出」，统计保证「这个输出确实有那个效果」——
+两件事，不能互相替代。
 
 ## 实测（RTX 2080 SUPER）
 

@@ -13,6 +13,22 @@
 // only +,-,* and one polynomial fade, so fast-math rounding stays ~1e-7 and
 // the verify gate can use a tight relL2 budget. Transcendentals (sin/cos)
 // are avoided on purpose by picking gradients from a fixed 8-direction set.
+//
+// CONTRACT: NO TRANSCENDENTALS IN noise.cuh / pixel.cuh / post.cuh / icon.cuh
+// ---------------------------------------------------------------------------
+// The whole "bit-identical GPU vs CPU" property rests on one fact: every
+// expression in these headers is built from +, -, *, / and comparisons, which
+// are IEEE correctly rounded on both sides. Device sinf/cosf/expf/powf are
+// 2-ulp approximations whose results may also differ between architectures,
+// so a single one of them silently downgrades "same seed -> same bytes" into
+// "same seed -> visually similar".
+//
+// Measured (docs/experiments.md 11): building the strict-IEEE target with
+// --use_fast_math changes runtime by 0-3% (inside measurement noise), so
+// there is no speed to win by breaking this contract. When a generator seems
+// to need a transcendental, use a polynomial or an integer power (powi
+// below) - that is why the specular highlights are integer powers and the
+// gradients come from a table of 8 fixed directions.
 
 #include <cmath>
 #include <cstdint>

@@ -8,6 +8,12 @@
 GPU 与 CPU 参考**逐位一致**（maxAbs = 0），同一个 seed 无限复现，
 **换 seed 就是换构图，风格不变**。
 
+CUDA 是这里的**执行器，不是设计者**：同一套 shader 也能在 CPU 上跑，
+`--cpu` 就是那条路径，输出与 GPU **逐字节相同**（`verify.ps1` 用 SHA256 校验）。
+GPU 的收益高度集中在两处——反应扩散迭代（140×）和 A1 印刷母版（21×）；
+图标量产是 I/O 主导，不需要 GPU。这个不对称在
+[「为什么是 CUDA」](#为什么是-cuda以及哪里不需要它) 里有实测数据。
+
 ![showcase](docs/showcase.png)
 
 ---
@@ -36,10 +42,14 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1          # CMake + Ni
 
 # 回归门禁（改动后跑这个）
 powershell -ExecutionPolicy Bypass -File scripts\verify.ps1
+
+# 没有 NVIDIA 卡也能跑：--cpu 是完整渲染后端，输出与 GPU 逐字节相同
+.\bin\keenly.exe --cpu --preset dusk --width 2000 --height 2832 --out out\a1_poster.png
 ```
 
-A1 300 DPI 印刷母版：`--width 7014 --height 9933`（7000 万像素，全链约
-1.3 秒：GPU 渲染 0.4s + 编码/写盘 0.9s）。
+A1 300 DPI 印刷母版：`--width 7014 --height 9933`（7000 万像素）。实测全链
+约 1.9–2.3 秒，其中渲染 0.46s + 后期 0.39s + 编码/写盘 1.08s——**写盘才是瓶颈**，
+GPU 渲染只占约 20%。`--cpu` 同尺寸约 10 秒（32 线程）。
 
 ---
 
@@ -50,12 +60,12 @@ src/
   keenly.cu       CLI + 位级门禁 + 九宫格/图标 demo + PNG 写出
   noise.cuh       整数哈希、8 方向梯度噪声、fBm、ridged fBm、Worley、powi
   turing.cuh      Gray-Scott 反应扩散：Jacobi 模拟 + 网格采样（可平铺）
-  pixel.cuh       调色板、分层构图、16 个场生成器（GPU/CPU 共享的像素着色）
+  pixel.cuh       调色板、分层构图、17 个场生成器（GPU/CPU 共享的像素着色）
   sdf.cuh         2D SDF 图元 + 18 个技能符号库（纯多项式 + IEEE sqrt）
   icon.cuh        图标合成：流体背景 + 符号 + 分级边框 + 圆角遮罩 -> RGBA
   post.cuh        每像素后期尾链（split-tone/颗粒/暗角/ACES，静帧与图标共用）
   render.h/.cu    field/icon kernel + post 链（bright/blur/compose）+ RD 模拟
-  reference.cu    CPU 参考（串行遍历，同 pixel/icon shader）
+  reference.cu    CPU 实现：串行参考（门禁用）+ 多线程后端（--cpu 用）
   png_writer.h    零依赖 PNG 写出（RGB/RGBA，8/16-bit，stored DEFLATE）
   compare.h       DiffStats / compareArrays（门禁比较）
   cuda_utils.h    CUDA_CHECK + GpuTimer
@@ -65,7 +75,7 @@ docs/
   experiments.md  实验记录：改了什么 → 指标怎么变 → 为什么
 scripts/
   build.ps1 / build_direct.ps1   两种构建路径
-  verify.ps1                      回归门禁（构建 + 位级门禁 + 冒烟渲染）
+  verify.ps1                      回归门禁（构建 + 位级门禁 + CPU/GPU 奇偶 + 冒烟）
   icon_stats.py                   图标质检（对比度/值域/64px 可读性）
 tools/
   grid_stats.py / comp_stats.py / validate_rd.py   分析脚本（见 tools/README.md）
@@ -91,7 +101,7 @@ tools/
 
 ## 生成器 × 调色板
 
-**17 个场生成器**（`--mode`）：
+**17 个场生成器**（`--mode`；`keenly --modes` 打印带编号的实时清单）：
 
 | mode | 质感 | 数学 |
 |---|---|---|
@@ -159,13 +169,36 @@ manifest 驱动）见 [docs/icons_plan.md](docs/icons_plan.md)，质检脚本
 ## 工程纪律
 
 **位级门禁**。Keenly 用严格 IEEE 数学编译（`--fmad=false`，不加 fast-math），
-所以 GPU 渲染与 CPU 参考逐位一致——`keenly --check-all` 对全部 17 个场生成器
-（含 Gray-Scott 迭代模拟）加图标合成路径（family + 通用 glow 各一）要求
-`maxAbs == 0`，`scripts\verify.ps1` 每次改动后跑（含 icon/gicon 冒烟）。
-这不是过度工程：
-它同时保证了 seed 系列的可复现性、未来分块渲染的无缝性、印刷母版的可重渲性。
+所以 GPU 渲染与 CPU 参考逐位一致。`keenly --check-all` 要求 `maxAbs == 0`，
+覆盖三层：
+
+1. **field shader**——全部 17 个场生成器（含 Gray-Scott 迭代模拟）；
+2. **post 链**——bright/blur/compose（halation/bloom/颗粒/暗角/ACES）。
+   除每个生成器各测一遍，还有一条**合成 HDR 输入**的检查：用线性渐变 +
+   两个超阈值亮团喂进去，并断言输出值域非恒定。原因是只在真实画面上比对
+   并不够——某些生成器（warp 就是）在门禁尺寸下没有像素超过 bright 阈值，
+   halation/bloom 全被乘了 0，后期阶段等于空转。实测：故意注入 1% 的
+   halation 误差，在 ridge 上被抓到、在 warp 上报 0——所以合成输入这条
+   不是冗余，是补洞。
+3. **CPU 行切分**——`--cpu` 用行带分给多线程，门禁证明任意线程数（用 7 这个
+   奇数）与串行参考逐位相同。这条一旦失败，说明有人往 shader 里塞了跨像素
+   状态（线程局部 RNG、累加器），线程数就进入了输出。
+
+`scripts\verify.ps1` 每次改动后跑，另外还做一次 **GPU vs `--cpu` 的 PNG
+SHA256 比对**——门禁比的是浮点 buffer，奇偶校验比的是最终字节，覆盖
+field + post + sRGB 编码 + dither 的端到端一致性。
+
+这不是过度工程：它同时保证了 seed 系列的可复现性、跨机器可复现性
+（`--cpu` 在任何机器上出同一张图）、未来分块渲染的无缝性、印刷母版的可重渲性。
 历史教训（实验 1/2/3）都写在 [docs/experiments.md](docs/experiments.md) 里——
 fast-math 的误差预算模型被 bands 的 fold 增益（126 倍）击穿后，才换成零误差的编译约定。
+
+**禁止超越函数**。`noise.cuh` / `pixel.cuh` / `post.cuh` / `icon.cuh` 里
+不许出现 `sinf`/`cosf`/`expf`/`powf`——设备侧它们是 2-ulp 近似且跨架构可能
+不同，一个就足以把「同 seed 同字节」降级成「看着差不多」。这是位级门禁能
+成立的前提，契约写在 `noise.cuh` 顶部。代价实测为 **0**：同一负载下
+`--use_fast_math` 与严格 IEEE 的运行时差在噪声内（0–3%，见实验 11），
+所以没有任何速度值得去破坏它。
 
 **纯函数纪律**。噪声只用整数哈希 + 多项式 + IEEE sqrt；高光用整数幂连乘
 （不用 libm `pow`）；没有三角函数、没有全局状态。反应扩散用 **Jacobi
@@ -176,24 +209,67 @@ ping-pong**（每格只读上一帧）保持同样的确定性。这是「换 se
 舍入底噪随链长增长、fold 的结构性增益、直方图形状判据（值域塌缩 vs 双峰）、
 迭代模拟的种子尺度语义（实验 5/6）。
 
-## 性能（RTX 2080 SUPER，健康时钟实测）
+## 性能（RTX 2080 SUPER + Ryzen 9 3950X 32 线程，热态交替采样）
 
-| 输出 | 尺寸 | field | post | write |
-|---|---|---|---|---|
-| 电影画幅 | 2560×1072 | ~40 ms | ~1.3 ms | ~66 ms |
-| A1 300 DPI | 7014×9933（70MP） | ~395 ms | ~25 ms | ~0.9 s |
-| 图灵斑海报 | 2000×2832 | ~95 ms（含 512²×6000 步模拟） | ~2.5 ms | ~136 ms |
-| 技能图标 | 128×128 RGBA | **~0.1 ms**（单 kernel 含后期） | 同左 | ~1 ms |
+| 输出 | GPU | `--cpu`（32 线程） | 倍数 |
+|---|---|---|---|
+| field 2000×2832（5.7MP） | **49 ms**（116 Mp/s） | 871 ms（6.5 Mp/s） | **18×** |
+| field A1 300 DPI（70MP） | **464 ms**（150 Mp/s） | 9770 ms（7.1 Mp/s） | **21×** |
+| 同上，CPU 单线程 | — | 16578 ms | 340× |
+| Gray-Scott 512²×3000 步 | **~52 ms** | 7264 ms | **~140×** |
+| Gray-Scott 2048²×2000 步 | **380 ms** | 21674 ms | **57×** |
+| A1 300 DPI 全链（含写盘） | 2.3 s | ~10.9 s | 4.7× |
+| 160 张图标批（`--icons-demo`） | 662 ms | ≈ 同量级 | **≈1×** |
+| 单张 128px 图标 | 0.28 ms | ~2.5 ms | 9× |
 
-write = sRGB 编码 + dither + 流式落盘（多线程）。渲染不是瓶颈，写出链
-次之；文件体积仍是 stored DEFLATE（零依赖零压缩）。注意 GPU 降频能把
-所有数字放大 10 倍以上，A/B 要热态交替采样（见实验 9）。
+`--cpu` 与 GPU 的输出**逐字节相同**（verify.ps1 用 SHA256 校验），所以上表
+是纯性能对照，不掺质量差异。
+
+---
+
+## 为什么是 CUDA（以及哪里不需要它）
+
+CUDA 在这里是**执行器**，不是设计者。整套架构——每个像素是 `(x, y, seed)`
+的纯函数、反应扩散用 Jacobi ping-pong——换成 Metal / WebGPU / ISPC / CPU
+SIMD 会长得一模一样。项目里没有任何 CUDA 专属技巧（无手写 PTX、无 warp
+intrinsic、无 texture object），而且两次主动否定了 CUDA 的常规套路：
+shared-memory tiling 实现后测出慢 20% 就回滚（实验 9），encode 阶段拒绝
+搬上 GPU 因为会破坏逐字节复现（实验 8）。
+
+**但收益极不均匀**，这决定了它值不值得：
+
+| 功能 | CUDA 的必要性 |
+|---|---|
+| Gray-Scott 反应扩散 | **决定性**：140×。是「调一次参数等 7 秒」和「即时」的区别 |
+| A1 600 DPI 印刷母版（280MP） | **决定性**：CPU 约 44s/张，且 3.35GB/buffer 是真瓶颈 |
+| A1 300 DPI / 2K 预览 | 有意义：9.8s → 0.46s |
+| **160 张图标量产** | **几乎为零**：662ms / 149 个文件 ≈ 4.4ms/个，其中渲染只占 0.28ms，**94% 是 I/O** |
+| 动画（路线图，300 帧 @2K） | 决定性 |
+
+结论：**印刷母版 + 图灵斑 + 动画是 CUDA 的真实需求；图标量产不是。**
+图标线用 32 线程 CPU 版本端到端一样快，还能省掉 55 秒构建和驱动依赖。
+两条线对 GPU 的需求差了三个数量级，这一点值得诚实标注，而不是用
+「CUDA 工作室」的叙事把图标线一起包装进去。
+
+**和 Python / TS / C++ 比**：Python 不是「更慢的替代品」而是「同样快但丢掉
+可复现性」——CuPy/numba 跑同一块 GPU 速度持平，但 numpy 的 CPU SIMD 分派、
+numba 的默认 fastmath、CuPy 的黑盒 kernel 让 `maxAbs == 0` 基本做不到。
+在这个项目里选 Python 是主动变差。C++ 多线程慢 18–21×，但构建 2 秒、
+零驱动依赖，所以它作为 `--cpu` 后端存在（`reference.cu` 的并行路径）。
+TS/JS 没有可用的 GPU compute，只有在「产品是网页工具」时才成立。
+
+**一个反直觉的实测**：严格 IEEE 是**免费的**。A1 300 DPI 全链，严格 IEEE
+1775/1745 ms vs `--use_fast_math` 1712/1731 ms——差在噪声内。因为管线里
+没有超越函数（8 方向梯度表 + 多项式 fade + 整数幂），所以「可复现」和
+「快」之间根本没有取舍。代价是 0，前提是守住 `noise.cuh` 的禁超越函数契约。
 
 ---
 
 ## 路线图
 
 - [x] Gray-Scott 反应扩散（图灵斑，`--mode turing`，Jacobi 保位级门禁）
+- [x] post 链纳入位级门禁（合成 HDR 输入，防空转）
+- [x] `--cpu` 完整渲染后端（无 NVIDIA 卡可出图，逐字节同 GPU）
 - [ ] 技能图标 Phase 2：manifest 批量产（配额表 160 张）+ 32px 剪影档
 - [ ] tile + halo 分块渲染，打通 A1 600 DPI（单 buffer 3.35GB 超 8GB 显存）
 - [ ] 逐帧换 seed 的动画路径（颗粒「沸腾」= 胶片感）→ ffmpeg 帧序列

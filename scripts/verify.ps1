@@ -4,18 +4,27 @@
     bit-identical to the CPU reference.
 
 .DESCRIPTION
-    This is the regression gate. It answers one question:
+    This is the regression gate. It answers two questions:
 
-        Is every field generator still BIT-EXACT against the CPU reference?
+        Is every generator still BIT-EXACT against the CPU reference?
+        Does the --cpu backend produce the same PNG bytes as the GPU?
 
     Keenly compiles strict IEEE math (--fmad=false, no fast-math) precisely so
     GPU renders match the serial CPU reference sample-for-sample (maxAbs 0).
     The gate is a hard error (exit 1) on any deviation - if it fires, a
-    non-IEEE operation slipped into noise.cuh / pixel.cuh and reproducibility
-    (tiling, seed series, print masters) is gone.
+    non-IEEE operation slipped into noise.cuh / pixel.cuh / post.cuh, or a
+    post-chain bug (blur taps, half-res offset) was introduced, and
+    reproducibility (tiling, seed series, print masters) is gone.
 
-    A tiny render smoke test follows the gate: it catches launch and PNG
-    write failures that a math-only check would miss.
+    The bit-exact comparison covers THREE things, not just the field:
+      1. field shader        (per generator)
+      2. post chain          (per generator + a synthetic HDR pass that
+                             guarantees the bright/blur/compose stages see
+                             real energy instead of a black image)
+      3. cpu row-split       (thread count must not change a single float)
+
+    A CPU/GPU PNG parity check and a tiny render smoke test follow: they
+    catch launch, encode and write failures that a math-only check misses.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\verify.ps1
@@ -96,12 +105,45 @@ Write-Step "Verify gate: GPU vs CPU, expect maxAbs = 0 on every generator"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "GATE FAILED: GPU output is not bit-identical to the CPU reference." -ForegroundColor Red
     Write-Host "A non-IEEE operation (transcendental, fast-math div, FMA fusion) has" -ForegroundColor Red
-    Write-Host "slipped into src\noise.cuh or src\pixel.cuh." -ForegroundColor Red
+    Write-Host "slipped into src\noise.cuh / src\pixel.cuh / src\post.cuh, OR a post" -ForegroundColor Red
+    Write-Host "chain bug (blur taps, half-res offset, edge clamp) was introduced." -ForegroundColor Red
     exit 1
 }
 
 # ---------------------------------------------------------------------------
-# 3. Render smoke test (launch + PNG write path)
+# 3. CPU backend parity: --cpu must produce byte-identical PNGs to the GPU.
+#    This is the "same seed, same image, anywhere" claim made executable: it
+#    covers field + post + encode end to end, not just the float buffers the
+#    gate compares.
+# ---------------------------------------------------------------------------
+Write-Step "CPU backend parity (GPU PNG vs --cpu PNG, byte-identical)"
+$parityDir = Join-Path $root "out\_parity"
+New-Item -ItemType Directory -Path $parityDir -Force | Out-Null
+$gpuPng = Join-Path $parityDir "gpu.png"
+$cpuPng = Join-Path $parityDir "cpu.png"
+
+& $exe --no-check --width 512 --height 320 --depth 16 --preset dusk --seed 42 `
+       --out $gpuPng | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Error "GPU parity render failed"; exit 1 }
+
+& $exe --cpu --width 512 --height 320 --depth 16 --preset dusk --seed 42 `
+       --out $cpuPng | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Error "CPU parity render failed"; exit 1 }
+
+$gpuHash = (Get-FileHash -LiteralPath $gpuPng -Algorithm SHA256).Hash
+$cpuHash = (Get-FileHash -LiteralPath $cpuPng -Algorithm SHA256).Hash
+if ($gpuHash -ne $cpuHash) {
+    Write-Host "PARITY FAILED: --cpu output differs from the GPU render." -ForegroundColor Red
+    Write-Host "  gpu: $gpuHash" -ForegroundColor Red
+    Write-Host "  cpu: $cpuHash" -ForegroundColor Red
+    Write-Host "The CPU backend is a rendering path, not a reference: it must match." -ForegroundColor Red
+    exit 1
+}
+Remove-Item -LiteralPath $parityDir -Recurse -Force
+Write-Host "parity ok: $($gpuHash.Substring(0,16))... (GPU == --cpu, 16-bit PNG)"
+
+# ---------------------------------------------------------------------------
+# 4. Render smoke test (launch + PNG write path + CPU backend)
 # ---------------------------------------------------------------------------
 Write-Step "Render smoke test (512px still + 2x2 grid + icons)"
 $smokeDir = Join-Path $root "out"
@@ -123,5 +165,5 @@ if ($LASTEXITCODE -ne 0) { Write-Error "icon smoke failed"; exit 1 }
 if ($LASTEXITCODE -ne 0) { Write-Error "gicon smoke failed"; exit 1 }
 
 Write-Host ""
-Write-Host "PASS: all generators bit-exact, renders write clean." -ForegroundColor Green
+Write-Host "PASS: field + post bit-exact, CPU/GPU PNG parity, renders write clean." -ForegroundColor Green
 exit 0

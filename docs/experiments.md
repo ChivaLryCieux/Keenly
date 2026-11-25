@@ -204,6 +204,81 @@ cudaMalloc「感觉不贵」，乘以 216 就是秒级；门禁「每项都跑�
 
 ---
 
+## 11 — 严格 IEEE 是免费的；空转的门禁是假信心（2026-11-25）
+
+**问题**：项目声称「严格 IEEE（`--fmad=false`）换可复现」，但没人测过这个
+约定的**代价**。同时 post 链（halation/bloom/vignette/ACES）一直没有 CPU
+参考——门禁只比 field，而交付的 PNG 含 post。
+
+**实验 A（严格 IEEE 的代价）**：同一份源码编两个 exe，`--fmad=false` vs
+`--use_fast_math`，A1 300 DPI 全链热态交替采样：
+
+```
+strict IEEE : 1775 / 1745 ms
+fast_math   : 1712 / 1731 ms     ← 差在噪声内（0-3%）
+```
+
+**结论**：管线里没有超越函数（8 方向梯度表 + 多项式 fade + `powi` 整数幂），
+所以 fast-math 没有东西可优化。**可复现与快之间不存在取舍，代价是 0。**
+同时 fast-math 版门禁立刻挂掉（warp maxAbs 1.4e-04、bands 3.0e-02）——
+正是实验 3 那个 126 倍增益。这条结论完全依赖「禁超越函数」契约，所以契约
+必须写进 `noise.cuh` 顶部（已写）。一旦有人加一个 `sinf`，免费立刻变成
+「2 ulp 的漂移」。
+
+**实验 B（补 post 门禁）**：实现 `renderPostCpu`（bright/blur/compose 串行
+参考），纳入 `maxAbs == 0`。首版直接在真实画面上比对，全绿。
+
+**然后做反向验证**——故意注入 1% 的 halation 误差：
+
+```
+mode warp   post maxAbs 0.000e+00     ← 报 0！
+mode ridge  post maxAbs 5.175e-04     ← 抓到了
+```
+
+**原因**：warp 在门禁尺寸（320x180）下没有像素超过 bright pass 的 1.1
+阈值，`knee = 0`，halation/bloom 两项全被乘 0。后期阶段被调用、被比较、
+**但没被测试**——一个「全绿的空转门禁」。
+
+**修复**：加一条合成 HDR 检查，输入是线性渐变 + 两个超阈值亮团，并断言
+输出值域非恒定（`coverage: output range [0.000, 0.986] ok`）。修复后同一
+注入误差在合成输入上稳定报 `maxAbs 1.218e-03`，exit 1。
+
+三种真实后链 bug 的检出实测：
+
+| 注入的 bug | 合成检查报出 |
+|---|---|
+| halation 权重 1.00 → 1.01 | maxAbs 1.218e-03 |
+| 半分辨率采样 x/2 → (x+1)/2 | maxAbs 1.261e-01 |
+| blur 抽头 -4..4 → -3..3 | maxAbs 1.170e-02 |
+
+**教训**：(1) 优化/严格化之前先测**代价**——「严格 IEEE 会变慢」是个未经验证
+的假设，实测为 0。(2) **门禁要验证自己没空转**：一条恒真的断言和没有断言
+一样坏，甚至更坏，因为它签发假信心。任何依赖输入分布的门禁，都要么喂
+能覆盖全链的合成输入，要么显式断言覆盖率。
+
+---
+
+## 12 — `--cpu` 后端：把「可复现」从同卡升级到跨机器（2026-11-25）
+
+**改动**：`reference.cu` 加 `renderFieldCpuParallel`（行带多线程）和
+`renderPostCpu(threads)`；CLI 加 `--cpu` / `--cpu-threads`。CPU 路径不经
+`cudaGetDeviceProperties`，所以没有 NVIDIA 驱动的机器也能出图。
+
+**实测**（2000x2832，32 线程）：field 893 ms + post 762 ms → 并行化后
+post 98 ms。整链 10.9 s → 约 2.0 s（仍比 GPU 慢约 20×，符合预期）。
+
+**正确性**：GPU 与 `--cpu` 的 PNG **SHA256 逐字节相同**（8-bit、16-bit、
+turing 模式全部验证）；线程数 1/3/7/32 输出同一个 hash。门禁新增两条断言：
+每生成器的 CPU 行切分一致性（7 线程 vs 串行），以及 verify.ps1 的
+GPU/CPU PNG 奇偶校验。
+
+**教训**：可复现性有**强度等级**——「同一张卡同版本驱动可复现」比
+「任何机器可复现」弱得多。既然像素本来就是 `(x, y, seed)` 纯函数，补一个
+CPU 后端（约 100 行）就把声明补完整了，顺带让门禁能在无 GPU 的 CI 上跑。
+纯函数纪律的回报在这里兑现：并行化是纯 wall-clock 收益，一个 float 都不变。
+
+---
+
 ## 待办实验
 
 - [ ] tile + halo 分块渲染，打通 A1 600 DPI（显存 3.35GB/buffer 超 8GB 卡）
