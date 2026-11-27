@@ -263,11 +263,38 @@ void renderPostCpu(float* hOut, const float* hField, int w, int h,
     });
 }
 
-void renderIconCpu(float* hRgba, int w, int h, const IconParams& p)
+namespace
 {
-    for (int y = 0; y < h; ++y)
+void iconRows(float* hRgba, int w, int h, int y0, int y1, const IconParams& p)
+{
+    for (int y = y0; y < y1; ++y)
         for (int x = 0; x < w; ++x)
             iconPixel(p, x, y, w, h, hRgba + (size_t(y) * w + x) * 4);
+}
+}  // namespace
+
+void renderIconCpu(float* hRgba, int w, int h, const IconParams& p)
+{
+    iconRows(hRgba, w, h, 0, h, p);
+}
+
+void renderIconCpuParallel(float* hRgba, int w, int h, const IconParams& p,
+                           int threads)
+{
+    if (threads <= 1 || h <= 1) {
+        iconRows(hRgba, w, h, 0, h, p);
+        return;
+    }
+
+    std::vector<std::thread> ts;
+    ts.reserve(size_t(threads));
+    for (int t = 0; t < threads; ++t) {
+        const int y0 = int(size_t(h) * size_t(t) / size_t(threads));
+        const int y1 = int(size_t(h) * size_t(t + 1) / size_t(threads));
+        if (y0 >= y1) continue;
+        ts.emplace_back(iconRows, hRgba, w, h, y0, y1, p);
+    }
+    for (auto& th : ts) th.join();
 }
 
 }  // namespace keenly

@@ -51,4 +51,9 @@ void renderIconGpu(float* dRgba, int w, int h, const IconParams& p);
 // CPU reference for the icon compositor (same iconPixel).
 void renderIconCpu(float* hRgba, int w, int h, const IconParams& p);
 
+// Same icon compositor split across row bands. iconPixel is pure, so the
+// split is invisible in the output exactly as it is for field pixels.
+void renderIconCpuParallel(float* hRgba, int w, int h, const IconParams& p,
+                           int threads);
+
 }  // namespace keenly

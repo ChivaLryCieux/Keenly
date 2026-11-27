@@ -421,6 +421,16 @@ static void parallelFor(size_t n, F fn)
     for (auto& th : ts) th.join();
 }
 
+static int cpuThreadCount(int requested)
+{
+    int threads = requested;
+    if (threads <= 0) {
+        threads = int(std::thread::hardware_concurrency());
+        if (threads <= 0) threads = 1;
+    }
+    return threads;
+}
+
 // Linear RGB buffer -> PNG (sRGB encode + TPDF dither + quantize).
 // Encodes in parallel across CPU cores; output bytes are identical to the
 // old serial loop (per-sample pure math, deterministic LCG dither).
@@ -1121,7 +1131,9 @@ static int runGrid(const Args& args)
     const int gw = 3 * tile + 4 * gap;
     std::vector<float> img(size_t(gw) * size_t(gw) * 3, 0.018f);  // gap background
     std::vector<float> cellImg(size_t(tile) * size_t(tile) * 3);
-    GpuBuffer fieldBuf, outBuf;  // reused across all nine cells
+    std::vector<float> cpuField(size_t(tile) * size_t(tile) * 3);
+    GpuBuffer fieldBuf, outBuf;  // reused across all nine cells on the GPU path
+    const int threads = cpuThreadCount(args.cpuThreads);
 
     for (int i = 0; i < 9; ++i) {
         keenly::FieldParams f;
@@ -1137,18 +1149,26 @@ static int runGrid(const Args& args)
 
         std::printf("cell %d : %-6s mode %d seed %u\n", i + 1, cells[i].preset,
                     f.mode, f.seed);
-        if (args.check && !runCheck(f)) {
-            std::fprintf(stderr, "CHECK FAILED on cell %d\n", i + 1);
-            return 1;
+        if (args.check) {
+            const bool checkOk = args.cpu ? runCpuSplitCheck(f) : runCheck(f);
+            if (!checkOk) {
+                std::fprintf(stderr, "CHECK FAILED on cell %d\n", i + 1);
+                return 1;
+            }
         }
 
         const size_t n = size_t(tile) * size_t(tile) * 3;
-        float* dField = fieldBuf.ensure(n);
-        float* dOut = outBuf.ensure(n);
-        keenly::renderFieldGpu(dField, tile, tile, f);
-        keenly::renderPostGpu(dOut, dField, tile, tile, p);
-        CUDA_CHECK(cudaMemcpy(cellImg.data(), dOut, n * sizeof(float),
-                              cudaMemcpyDeviceToHost));
+        if (args.cpu) {
+            keenly::renderFieldCpuParallel(cpuField.data(), tile, tile, f, threads);
+            keenly::renderPostCpu(cellImg.data(), cpuField.data(), tile, tile, p, threads);
+        } else {
+            float* dField = fieldBuf.ensure(n);
+            float* dOut = outBuf.ensure(n);
+            keenly::renderFieldGpu(dField, tile, tile, f);
+            keenly::renderPostGpu(dOut, dField, tile, tile, p);
+            CUDA_CHECK(cudaMemcpy(cellImg.data(), dOut, n * sizeof(float),
+                                  cudaMemcpyDeviceToHost));
+        }
 
         const int cx = gap + (i % 3) * (tile + gap);
         const int cy = gap + (i / 3) * (tile + gap);
@@ -1279,12 +1299,31 @@ static bool runIconCheck(const keenly::IconParams& p)
     return d.maxAbs == 0.0;
 }
 
-// Render one RGBA icon into host memory through a reusable device scratch
-// buffer. Batch runs call this repeatedly with the same GpuBuffer, so the
-// device allocation happens once per batch instead of once per icon.
-// Returns the GPU render time in ms.
+static bool runIconCpuSplitCheck(const keenly::IconParams& p)
+{
+    const int w = 128, h = 128;
+    const size_t n = size_t(w) * size_t(h) * 4;
+    std::vector<float> serial(n), threaded(n);
+
+    keenly::renderIconCpu(serial.data(), w, h, p);
+    keenly::renderIconCpuParallel(threaded.data(), w, h, p, 7);
+
+    const DiffStats d = compareArrays(threaded.data(), serial.data(), n);
+    std::printf("check  : relL2 %.3e  maxAbs %.3e  (icon CPU split, expect 0)\n",
+                d.relL2, d.maxAbs);
+    return d.maxAbs == 0.0;
+}
+
+static bool runIconBackendCheck(const Args& args, const keenly::IconParams& p)
+{
+    return args.cpu ? runIconCpuSplitCheck(p) : runIconCheck(p);
+}
+
+// Render one RGBA icon into host memory. GPU batch runs reuse the scratch
+// buffer; CPU runs split rows across worker threads. Returns render time in ms.
 static float renderIconToHost(const keenly::IconParams& p, int w, int h,
-                              std::vector<float>& host, GpuBuffer& scratch)
+                              std::vector<float>& host, GpuBuffer& scratch,
+                              bool useCpu, int threads)
 {
     const size_t n = size_t(w) * size_t(h) * 4;
     host.resize(n);
@@ -1295,6 +1334,14 @@ static float renderIconToHost(const keenly::IconParams& p, int w, int h,
     const int minDim = (w < h ? w : h);
     ps.post.grainScale *= float(minDim) / 128.0f;
     if (minDim <= 32) ps.post.grain *= 0.5f;
+
+    if (useCpu) {
+        const auto t0 = std::chrono::steady_clock::now();
+        keenly::renderIconCpuParallel(host.data(), w, h, ps, threads);
+        return std::chrono::duration<float, std::milli>(
+            std::chrono::steady_clock::now() - t0).count();
+    }
+
     float* dBuf = scratch.ensure(n);
     GpuTimer timer;
     timer.start();
@@ -1307,13 +1354,14 @@ static float renderIconToHost(const keenly::IconParams& p, int w, int h,
 static bool renderOneIcon(const Args& args, const keenly::IconParams& p,
                           int w, int h, const std::string& path)
 {
-    if (args.check && !runIconCheck(p)) {
-        std::fprintf(stderr, "ICON CHECK FAILED: GPU disagrees with the CPU reference\n");
+    if (args.check && !runIconBackendCheck(args, p)) {
+        std::fprintf(stderr, "ICON CHECK FAILED: backend output disagrees with the reference\n");
         return false;
     }
     GpuBuffer scratch;
     std::vector<float> img;
-    const float ms = renderIconToHost(p, w, h, img, scratch);
+    const float ms = renderIconToHost(p, w, h, img, scratch,
+                                      args.cpu, cpuThreadCount(args.cpuThreads));
 
     if (!writeImageRgba(path, w, h, img.data())) {
         std::fprintf(stderr, "failed to write %s\n", path.c_str());
@@ -1422,7 +1470,7 @@ static int runIconsDemo(const Args& args)
             ip.field.seed = 7u + unsigned(g) * 13u;
             ip.post.seed = ip.field.seed;
 
-            if (g == 0 && args.check && !runIconCheck(ip)) {
+            if (g == 0 && args.check && !runIconBackendCheck(args, ip)) {
                 std::fprintf(stderr, "ICON CHECK FAILED on family %s\n", kFamilies[f]);
                 allOk = false;
             }
@@ -1430,7 +1478,8 @@ static int runIconsDemo(const Args& args)
             char name[128];
             std::snprintf(name, sizeof(name), "%s/%s_%s.png", kFamilies[f],
                           kFamilies[f], keenly::glyphName(g));
-            const float ms128 = renderIconToHost(ip, kTile, kTile, icon, scratch);
+            const float ms128 = renderIconToHost(ip, kTile, kTile, icon, scratch,
+                                             args.cpu, cpuThreadCount(args.cpuThreads));
             if (!writeImageRgba(root + "/" + name, kTile, kTile, icon.data())) {
                 std::fprintf(stderr, "failed to write %s\n", name);
                 allOk = false;
@@ -1438,7 +1487,8 @@ static int runIconsDemo(const Args& args)
 
             std::snprintf(name, sizeof(name), "%s/thumbs/%s_%s_64.png", kFamilies[f],
                           kFamilies[f], keenly::glyphName(g));
-            const float ms64 = renderIconToHost(ip, kThumb, kThumb, thumb, scratch);
+            const float ms64 = renderIconToHost(ip, kThumb, kThumb, thumb, scratch,
+                                            args.cpu, cpuThreadCount(args.cpuThreads));
             if (!writeImageRgba(root + "/" + name, kThumb, kThumb, thumb.data())) {
                 std::fprintf(stderr, "failed to write %s\n", name);
                 allOk = false;
@@ -1486,7 +1536,8 @@ static int runIconsDemo(const Args& args)
             ip.tier = tier;
             ip.roundedMask = 1;
             ip.radius = 0.16f;
-            renderIconToHost(ip, t, t, cell, scratch);
+            renderIconToHost(ip, t, t, cell, scratch,
+                             args.cpu, cpuThreadCount(args.cpuThreads));
             const int cx = gap + (tier - 1) * (t + gap);
             for (int y = 0; y < t; ++y) {
                 for (int x = 0; x < t; ++x) {
@@ -1551,7 +1602,7 @@ static int runRainbowDemo(const Args& args)
                 ip.field.seed = 7u + unsigned(g) * 13u;
                 ip.post.seed = ip.field.seed;
 
-                if (g == 0 && args.check && !runIconCheck(ip)) {
+                if (g == 0 && args.check && !runIconBackendCheck(args, ip)) {
                     std::fprintf(stderr, "ICON CHECK FAILED on %s/%s\n",
                                  kStyles[st], kFgs[fi]);
                     allOk = false;
@@ -1560,7 +1611,8 @@ static int runRainbowDemo(const Args& args)
                 char name[160];
                 std::snprintf(name, sizeof(name), "%s/%s_%s.png", kStyles[st],
                               kFgs[fi], keenly::glyphName(g));
-                renderIconToHost(ip, kT, kT, icon, scratch);
+                renderIconToHost(ip, kT, kT, icon, scratch,
+                                 args.cpu, cpuThreadCount(args.cpuThreads));
                 if (!writeImageRgba(root + "/" + name, kT, kT, icon.data())) {
                     std::fprintf(stderr, "failed to write %s\n", name);
                     allOk = false;
@@ -1654,7 +1706,7 @@ static int runGlowDemo(const Args& args)
                 ip.field.seed = 7u + unsigned(g) * 13u;
                 ip.post.seed = ip.field.seed;
 
-                if (g == 0 && args.check && !runIconCheck(ip)) {
+                if (g == 0 && args.check && !runIconBackendCheck(args, ip)) {
                     std::fprintf(stderr, "ICON CHECK FAILED on %s/%s\n",
                                  kSchemes[st], kFgs[fi]);
                     allOk = false;
@@ -1663,7 +1715,8 @@ static int runGlowDemo(const Args& args)
                 char name[160];
                 std::snprintf(name, sizeof(name), "%s/%s_%s.png", kSchemes[st],
                               kFgs[fi], keenly::glyphName(g));
-                renderIconToHost(ip, kT, kT, icon, scratch);
+                renderIconToHost(ip, kT, kT, icon, scratch,
+                                 args.cpu, cpuThreadCount(args.cpuThreads));
                 if (!writeImageRgba(root + "/" + name, kT, kT, icon.data())) {
                     std::fprintf(stderr, "failed to write %s\n", name);
                     allOk = false;
@@ -1732,11 +1785,7 @@ static int runStillCpu(const Args& args, const keenly::FieldParams& field,
     const size_t pixels = size_t(w) * size_t(h);
     const size_t n = pixels * 3;
 
-    int threads = args.cpuThreads;
-    if (threads <= 0) {
-        threads = int(std::thread::hardware_concurrency());
-        if (threads <= 0) threads = 1;
-    }
+    const int threads = cpuThreadCount(args.cpuThreads);
     std::printf("cpu    : %d thread(s)\n", threads);
 
     std::vector<float> hField(n);
@@ -1789,10 +1838,25 @@ int main(int argc, char** argv)
         return 0;
     }
 
-    // --cpu renders the still pipeline without touching CUDA at all, so the
-    // device query has to stay behind this branch: on a machine with no
-    // NVIDIA driver cudaGetDeviceProperties would abort before we get here.
+    // --cpu is a backend selector, not a still-render mode: keep it ahead of
+    // every CUDA device query, then dispatch to the same asset types as the
+    // GPU path. --check-all remains CUDA-only because it compares backends.
     if (args.cpu) {
+        if (args.checkAll) {
+            std::fprintf(stderr, "--check-all requires the CUDA backend; run it without --cpu\n");
+            return 1;
+        }
+        if (!args.iconsDemo.empty())
+            return runIconsDemo(args);
+        if (!args.rainbowDemo.empty())
+            return runRainbowDemo(args);
+        if (!args.glowDemo.empty())
+            return runGlowDemo(args);
+        if (args.iconMode)
+            return runIcon(args);
+        if (!args.grid.empty())
+            return runGrid(args);
+
         applyPreset(args.field, args.postp, args.preset, args.postSet);
         if (args.film >= 0.0f) {
             args.postp.grain = 0.055f * args.film;
