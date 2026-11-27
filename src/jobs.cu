@@ -3,6 +3,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <set>
+#include <sstream>
 #include <vector>
 
 #include <cuda_runtime.h>
@@ -11,6 +13,9 @@
 #include "checks.h"
 #include "cuda_utils.h"
 #include "image_io.h"
+#include "artifact.h"
+#include "manifest.h"
+#include "version.h"
 
 // 3x3 showcase grid: nine style cells rendered tile by tile and pasted into
 // one image with a dark gap grid. Each cell is a full pipeline render
@@ -656,4 +661,110 @@ int runStillGpu(const Args& args, const keenly::FieldParams& field,
     std::printf("write  : %.3f ms  (sRGB encode + dither + stream to disk)\n", msWrite);
     std::printf("wrote  : %s  (%d-bit)\n", args.out.c_str(), args.depth);
     return 0;
+}
+
+int runIconsManifest(const Args& args)
+{
+    std::vector<IconAssetSpec> specs;
+    std::string error;
+    if (!loadIconManifest(args.iconsManifest, specs, error)) {
+        std::fprintf(stderr, "manifest error: %s\n", error.c_str());
+        return 1;
+    }
+
+    std::string manifestSha;
+    if (!sha256FileHex(args.iconsManifest, manifestSha)) manifestSha = "unknown";
+
+    GpuBuffer scratch;
+    std::vector<float> icon;
+    std::set<std::string> checkedFamilies;
+    int written = 0;
+    bool allOk = true;
+    const char* backend = args.cpu ? "cpu" : "cuda";
+    const int threads = cpuThreadCount(args.cpuThreads);
+
+    std::printf("manifest: %s  (%zu assets, %s backend)\n",
+                args.iconsManifest.c_str(), specs.size(), backend);
+
+    for (const IconAssetSpec& spec : specs) {
+        const int glyph = glyphFromName(spec.glyph);
+        if (glyph < 0) {
+            std::fprintf(stderr, "manifest error: unknown glyph %s\n", spec.glyph.c_str());
+            return 1;
+        }
+
+        keenly::IconParams ip;
+        applyIconFamily(ip, spec.family);
+        ip.glyph = glyph;
+        ip.tier = spec.tier;
+        ip.field.seed = spec.seed;
+        ip.post.seed = spec.seed;
+        ip.roundedMask = spec.mask == "round" ? 1 : 0;
+        ip.radius = spec.radius;
+
+        if (args.check && checkedFamilies.insert(spec.family).second &&
+            !runIconBackendCheck(args.cpu, ip)) {
+            std::fprintf(stderr, "ICON CHECK FAILED for family %s\n", spec.family.c_str());
+            allOk = false;
+            break;
+        }
+
+        const float ms = renderIconToHost(ip, spec.size, spec.size, icon, scratch,
+                                          args.cpu, threads);
+        char name[192];
+        std::snprintf(name, sizeof(name), "%s/%s_t%d_v%d_%d.png",
+                      spec.family.c_str(), spec.glyph.c_str(), spec.tier,
+                      spec.variant, spec.size);
+        const std::string path = args.outDir + "/" + name;
+        if (!writeImageRgba(path, spec.size, spec.size, icon.data())) {
+            std::fprintf(stderr, "failed to write %s\n", path.c_str());
+            allOk = false;
+            continue;
+        }
+
+        std::string outputSha;
+        if (!sha256FileHex(path, outputSha)) outputSha = "unknown";
+        const std::string canonical = canonicalIconSpec(spec);
+        const std::string specSha = sha256Hex(
+            reinterpret_cast<const uint8_t*>(canonical.data()), canonical.size());
+
+        std::ostringstream js;
+        js << "{\n"
+           << "  \"schema\": \"keenly.icon-artifact/v1\",\n"
+           << "  \"generator\": {\"name\": \"keenly\", \"version\": \"" << KEENLY_VERSION
+           << "\", \"sourceRevision\": \"" << KEENLY_SOURCE_REVISION << "\"},\n"
+           << "  \"backend\": \"" << backend << "\",\n"
+           << "  \"manifest\": {\"path\": \"" << jsonEscape(args.iconsManifest)
+           << "\", \"schema\": \"" << kIconManifestSchema
+           << "\", \"sha256\": \"" << manifestSha << "\"},\n"
+           << "  \"asset\": {\n"
+           << "    \"family\": \"" << jsonEscape(spec.family) << "\",\n"
+           << "    \"glyph\": \"" << jsonEscape(spec.glyph) << "\",\n"
+           << "    \"tier\": " << spec.tier << ",\n"
+           << "    \"variant\": " << spec.variant << ",\n"
+           << "    \"seed\": " << spec.seed << ",\n"
+           << "    \"size\": " << spec.size << ",\n"
+           << "    \"mask\": \"" << jsonEscape(spec.mask) << "\",\n"
+           << "    \"radius\": " << spec.radius << "\n"
+           << "  },\n"
+           << "  \"canonicalSpec\": \"" << jsonEscape(canonical) << "\",\n"
+           << "  \"specSha256\": \"" << specSha << "\",\n"
+           << "  \"output\": {\"path\": \"" << jsonEscape(path)
+           << "\", \"width\": " << spec.size << ", \"height\": " << spec.size
+           << ", \"sha256\": \"" << outputSha << "\"}\n"
+           << "}\n";
+
+        const std::string sidecar = path + ".json";
+        if (!writeTextFile(sidecar, js.str())) {
+            std::fprintf(stderr, "failed to write %s\n", sidecar.c_str());
+            allOk = false;
+            continue;
+        }
+        ++written;
+        std::printf("wrote  : %s  (%dx%d RGBA, %.2f ms)\n",
+                    path.c_str(), spec.size, spec.size, ms);
+    }
+
+    std::printf("manifest: %d/%zu asset(s) written\n", written, specs.size());
+    return allOk && written == int(specs.size()) ? 0 : 1;
 }

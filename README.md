@@ -40,6 +40,9 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1          # CMake + Ni
 # 图标整批：4 色系 x 18 符号 + 64px 缩略 + contact sheet
 .\bin\keenly.exe --icons-demo out\icons
 
+# schema 化生产批：144 张直渲图标 + 每张 PNG 的 provenance sidecar
+.\bin\keenly.exe --icons manifest\icons.csv --outdir out\icons_prod
+
 # 回归门禁（改动后跑这个）
 powershell -ExecutionPolicy Bypass -File scripts\verify.ps1
 
@@ -57,7 +60,13 @@ GPU 渲染只占约 20%。`--cpu` 同尺寸约 10 秒（32 线程）。
 
 ```
 src/
-  keenly.cu       CLI + 位级门禁 + 九宫格/图标 demo + PNG 写出
+  keenly.cu       主入口：后端初始化、asset-type 分发、静帧参数合成
+  cli.cu          CLI 参数 schema / parser
+  catalog.cu      preset、图标色系、生成器表、通用图标配方
+  jobs.cu         静帧/九宫格/图标/demo/manifest 批量执行任务
+  checks.cu       位级门禁与 CPU row-split 检查
+  manifest.cu     keenly.icon-manifest/v1 CSV schema 解析与 canonical spec
+  image_io.cu     sRGB/TPDF/量化与 PNG 写出
   noise.cuh       整数哈希、8 方向梯度噪声、fBm、ridged fBm、Worley、powi
   turing.cuh      Gray-Scott 反应扩散：Jacobi 模拟 + 网格采样（可平铺）
   pixel.cuh       调色板、分层构图、17 个场生成器（GPU/CPU 共享的像素着色）
@@ -270,7 +279,8 @@ TS/JS 没有可用的 GPU compute，只有在「产品是网页工具」时才�
 - [x] Gray-Scott 反应扩散（图灵斑，`--mode turing`，Jacobi 保位级门禁）
 - [x] post 链纳入位级门禁（合成 HDR 输入，防空转）
 - [x] `--cpu` 完整渲染后端（无 NVIDIA 卡可出图，逐字节同 GPU）
-- [ ] 技能图标 Phase 2：manifest 批量产（配额表 160 张）+ 32px 剪影档
+- [x] 技能图标 Phase 2：`keenly.icon-manifest/v1` 批量产 + canonical spec / PNG SHA256 provenance
+- [ ] 32px 剪影档与资产质量门禁（对比度/alpha bbox/可读性 fail 阈值）
 - [ ] tile + halo 分块渲染，打通 A1 600 DPI（单 buffer 3.35GB 超 8GB 显存）
 - [ ] 逐帧换 seed 的动画路径（颗粒「沸腾」= 胶片感）→ ffmpeg 帧序列
 - [ ] PNG fixed-Huffman 压缩，文件缩 2-5x

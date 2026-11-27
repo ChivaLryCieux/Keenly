@@ -31,6 +31,8 @@ struct Args
     int maskRound = 1;         // 1 = rounded rect, 0 = sharp rect
     float radius = 0.16f;      // corner radius, fraction of the min side
     std::string iconsDemo;     // non-empty: render the icon demo batch to DIR
+    std::string iconsManifest; // non-empty: schema-driven icon manifest CSV
+    std::string outDir = "out/icons"; // output root for manifest batches
 
     // ---- generic icon pipeline (rainbow bg + flat fg silhouette) -----------
     bool giconMode = false;    // generic icon path (overrides family)

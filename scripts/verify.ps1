@@ -164,6 +164,33 @@ if ($LASTEXITCODE -ne 0) { Write-Error "icon smoke failed"; exit 1 }
        --width 128 --height 128 --out (Join-Path $smokeDir "verify_smoke_gicon.png")
 if ($LASTEXITCODE -ne 0) { Write-Error "gicon smoke failed"; exit 1 }
 
+# Manifest production smoke: schema parse, deterministic render, PNG hash and
+# provenance sidecar all have to agree end to end.
+$miniManifest = Join-Path $smokeDir "_verify_manifest.csv"
+$manifestOut = Join-Path $smokeDir "_verify_manifest_icons"
+Set-Content -LiteralPath $miniManifest -Value @(
+    '#schema: keenly.icon-manifest/v1',
+    'family,glyph,tier,variant,seed,size,mask,radius',
+    'blue,sword,2,0,7,64,round,0.16',
+    'red,flame,3,1,123,32,rect,0.10'
+)
+& $exe --icons $miniManifest --outdir $manifestOut
+if ($LASTEXITCODE -ne 0) { Write-Error "manifest smoke failed"; exit 1 }
+$manifestPng = Join-Path $manifestOut "blue\sword_t2_v0_64.png"
+$manifestSidecar = "$manifestPng.json"
+if (-not (Test-Path -LiteralPath $manifestPng) -or -not (Test-Path -LiteralPath $manifestSidecar)) {
+    Write-Error "manifest smoke did not produce the expected PNG and sidecar"
+    exit 1
+}
+$sidecar = Get-Content -LiteralPath $manifestSidecar -Raw | ConvertFrom-Json
+$actualHash = (Get-FileHash -LiteralPath $manifestPng -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($sidecar.output.sha256 -ne $actualHash) {
+    Write-Error "manifest provenance hash does not match the PNG"
+    exit 1
+}
+Remove-Item -LiteralPath $manifestOut -Recurse -Force
+Remove-Item -LiteralPath $miniManifest -Force
+
 Write-Host ""
 Write-Host "PASS: field + post bit-exact, CPU/GPU PNG parity, renders write clean." -ForegroundColor Green
 exit 0

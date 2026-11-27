@@ -3,9 +3,10 @@
 战棋游戏技能图标生产线：小尺寸、大批量、四主色系 + 辅助色，
 矩形 / 圆角矩形遮罩，单进程批量出图，位级门禁继续成立。
 
-状态：Phase 1-4 已落地（含 `--check-all` 图标覆盖与 verify 图标冒烟）；
+状态：Phase 1-4 与 Phase 2 初版已落地（含 `--check-all` 图标覆盖、verify
+图标/manifest 冒烟、`keenly.icon-manifest/v1` 与 provenance sidecar）；
 另有通用图标管线（`--gicon`，rainbow/glow 背景 + 平涂前景，
-`--rainbow-demo` / `--glow-demo`）。剩余：Phase 2 manifest 批量产、
+`--rainbow-demo` / `--glow-demo`）。剩余：32px 剪影档、QA 质量门禁、
 Phase 5 可选增强。
 
 ---
@@ -139,11 +140,16 @@ seed 纪律：`seed = hash(family, glyph, tier, variant)`，manifest 里显式�
   图标版（含 §2 点缀色字段）。
 
 ### Phase 2 — 批量产 CLI
-- `keenly --icons manifest.csv --outdir out/icons`：**单进程**批量出图
-  （一次 CUDA init、buffer 复用、逐张写 PNG）；
-- manifest 列：`family, glyph, tier, variant, seed, size, mask, radius, mode, ...`
-  → 确定性复现整套图标；
-- 命名规范：`out/icons/<family>/<glyph>_t<tier>_v<variant>_<size>.png`。
+已实现初版：`keenly --icons manifest/icons.csv --outdir out/icons`。
+
+- schema：首行必须是 `#schema: keenly.icon-manifest/v1`；header 固定为
+  `family,glyph,tier,variant,seed,size,mask,radius`；
+- 命名规范：`out/icons/<family>/<glyph>_t<tier>_v<variant>_<size>.png`；
+- 每张 PNG 旁边写 `<name>.png.json` provenance：canonical spec、spec SHA256、
+  manifest SHA256、输出 PNG SHA256、backend、engine version/source revision；
+- `manifest/icons.csv` 是 4 families x 18 glyphs x 128/64 的 144 张生产配额表；
+- 批量任务仍是单进程执行器：一次 CUDA init、GPU scratch buffer 复用，CPU 后端
+  则按行分带渲染。增量缓存/atlas/QA 阈值尚未实现。
 
 ### Phase 3 — 预览与调优
 - 每色系 contact sheet（N 宫格，扩展现有 runGrid）；

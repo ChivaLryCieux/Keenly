@@ -60,6 +60,8 @@ void printUsage()
         "  --mask   M     round|rect                   (default round)\n"
         "  --radius F     corner radius, min-side fraction (default 0.16)\n"
         "  --icons-demo P render the icon demo batch into directory P\n"
+        "  --icons P       render schema-versioned icon manifest CSV P\n"
+        "  --outdir P      output root for manifest batches (default out/icons)\n"
         "generic icons (rainbow/glow background + flat fg silhouette):\n"
         "  --gicon        render one generic icon (uses --bg --fg --glyph --tier)\n"
         "  --bg     B     fluid|swirl|bands|rings|mosaic|glow (default fluid)\n"
@@ -276,6 +278,14 @@ bool parseArgs(int argc, char** argv, Args& a)
             const char* v = next("--icons-demo");
             if (!v) return false;
             a.iconsDemo = v;
+        } else if (key == "--icons") {
+            const char* v = next("--icons");
+            if (!v) return false;
+            a.iconsManifest = v;
+        } else if (key == "--outdir") {
+            const char* v = next("--outdir");
+            if (!v) return false;
+            a.outDir = v;
         } else if (key == "--gicon") {
             a.giconMode = true;
             a.iconMode = true;

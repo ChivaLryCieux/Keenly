@@ -28,10 +28,26 @@ add_executable(keenly
     src/checks.cu
     src/cli.cu
     src/image_io.cu
+    src/manifest.cu
     src/jobs.cu
     src/render.cu
     src/reference.cu
 )
 
-target_include_directories(keenly PRIVATE src)
+find_package(Git QUIET)
+set(KEENLY_GIT_REVISION unknown)
+if(GIT_FOUND)
+    execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --short=12 HEAD
+                    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                    OUTPUT_VARIABLE KEENLY_GIT_REVISION
+                    OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+endif()
+if(NOT KEENLY_GIT_REVISION)
+    set(KEENLY_GIT_REVISION unknown)
+endif()
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/generated)
+file(WRITE ${CMAKE_BINARY_DIR}/generated/keenly_source_revision.h
+     "#define KEENLY_SOURCE_REVISION \"${KEENLY_GIT_REVISION}\"\n")
+
+target_include_directories(keenly PRIVATE src ${CMAKE_BINARY_DIR}/generated)
 target_compile_options(keenly PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>)

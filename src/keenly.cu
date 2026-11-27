@@ -41,6 +41,8 @@ int main(int argc, char** argv)
             std::fprintf(stderr, "--check-all requires the CUDA backend; run it without --cpu\n");
             return 1;
         }
+        if (!args.iconsManifest.empty())
+            return runIconsManifest(args);
         if (!args.iconsDemo.empty())
             return runIconsDemo(args);
         if (!args.rainbowDemo.empty())
@@ -62,6 +64,9 @@ int main(int argc, char** argv)
 
     if (args.checkAll)
         return runCheckAll();
+
+    if (!args.iconsManifest.empty())
+        return runIconsManifest(args);
 
     if (!args.iconsDemo.empty())
         return runIconsDemo(args);

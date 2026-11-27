@@ -18,14 +18,21 @@ New-Item -ItemType Directory -Path $bin -Force | Out-Null
 # --fmad=false + NO --use_fast_math: Keenly renders strict IEEE math so GPU
 # output is bit-identical to the CPU reference and the verify gate can demand
 # maxAbs == 0. Speed is not the bottleneck; reproducibility is the product.
+$gen = Join-Path $root "build\generated"
+New-Item -ItemType Directory -Force $gen | Out-Null
+$rev = (& git -C $root rev-parse --short=12 HEAD 2>$null)
+if (-not $rev) { $rev = "unknown" }
+$revLine = '#define KEENLY_SOURCE_REVISION "' + $rev + '"'
+Set-Content -Path (Join-Path $gen "keenly_source_revision.h") -Value $revLine
+
 $flags = "-arch=sm_75 -O3 -lineinfo --expt-relaxed-constexpr -std=c++17 --fmad=false -Xcompiler=/utf-8"
 
-$srcArgs = (@("src\keenly.cu", "src\catalog.cu", "src\checks.cu", "src\cli.cu", "src\image_io.cu", "src\jobs.cu", "src\render.cu", "src\reference.cu") |
+$srcArgs = (@("src\keenly.cu", "src\catalog.cu", "src\checks.cu", "src\cli.cu", "src\image_io.cu", "src\manifest.cu", "src\jobs.cu", "src\render.cu", "src\reference.cu") |
             ForEach-Object { "`"$root\$_`"" }) -join " "
 $out = "`"$bin\keenly.exe`""
 
 Write-Host "Building keenly ..."
-$cmd = "`"$vcvars`" >nul 2>&1 && nvcc $flags -I`"$root\src`" $srcArgs -o $out"
+$cmd = "`"$vcvars`" >nul 2>&1 && nvcc $flags -I`"$root\src`" -I`"$gen`" $srcArgs -o $out"
 cmd /c $cmd
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to build keenly"; exit $LASTEXITCODE }
 
