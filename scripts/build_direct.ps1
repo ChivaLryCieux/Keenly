@@ -20,7 +20,7 @@ New-Item -ItemType Directory -Path $bin -Force | Out-Null
 # maxAbs == 0. Speed is not the bottleneck; reproducibility is the product.
 $flags = "-arch=sm_75 -O3 -lineinfo --expt-relaxed-constexpr -std=c++17 --fmad=false -Xcompiler=/utf-8"
 
-$srcArgs = (@("src\keenly.cu", "src\render.cu", "src\reference.cu") |
+$srcArgs = (@("src\keenly.cu", "src\catalog.cu", "src\checks.cu", "src\cli.cu", "src\image_io.cu", "src\jobs.cu", "src\render.cu", "src\reference.cu") |
             ForEach-Object { "`"$root\$_`"" }) -join " "
 $out = "`"$bin\keenly.exe`""
 

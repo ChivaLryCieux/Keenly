@@ -24,6 +24,11 @@ set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 -lineinfo --expt-relaxed-constexpr
 
 add_executable(keenly
     src/keenly.cu
+    src/catalog.cu
+    src/checks.cu
+    src/cli.cu
+    src/image_io.cu
+    src/jobs.cu
     src/render.cu
     src/reference.cu
 )
